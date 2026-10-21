@@ -1,0 +1,1630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32-S3 E-Reader Studio - Web BLE & Serial</title>
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #131b2e;
+      --card-hover: #18223a;
+      --border: #23304c;
+      --border-focus: #38bdf8;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.25);
+      --accent-hover: #0284c7;
+      --ble-color: #818cf8;
+      --ble-glow: rgba(129, 140, 248, 0.25);
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --mono-font: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      padding: 2rem 1rem;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 920px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1.25rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .title-group h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    .title-group p {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      margin-top: 0.2rem;
+    }
+
+    .badge-container {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    .badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.3rem 0.75rem;
+      border-radius: 9999px;
+      background: var(--border);
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.2s;
+    }
+
+    .badge.connected-ble {
+      background: rgba(129, 140, 248, 0.15);
+      color: var(--ble-color);
+      border: 1px solid var(--ble-color);
+      box-shadow: 0 0 10px var(--ble-glow);
+    }
+
+    .badge.connected-serial {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+      border: 1px solid var(--success);
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 0.85rem;
+      padding: 1.5rem;
+      box-shadow: 0 8px 20px -4px rgba(0, 0, 0, 0.3);
+      position: relative;
+    }
+
+    .card h2 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin-bottom: 0.85rem;
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.25rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.75rem;
+    }
+
+    .tab-btn {
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid transparent;
+      padding: 0.5rem 1rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+      border-radius: 0.5rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.15s;
+    }
+
+    .tab-btn:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .tab-btn.active {
+      color: #fff;
+      background: var(--ble-color);
+      box-shadow: 0 0 12px var(--ble-glow);
+    }
+
+    .tab-btn.active.serial-tab {
+      background: var(--accent);
+      box-shadow: 0 0 12px var(--accent-glow);
+      color: #090d16;
+    }
+
+    .instruction-box {
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid var(--border);
+      border-radius: 0.6rem;
+      padding: 1rem;
+      margin-bottom: 1.25rem;
+      font-size: 0.88rem;
+    }
+
+    .instruction-box ol {
+      padding-left: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .instruction-box li code {
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--accent);
+      padding: 0.15rem 0.4rem;
+      border-radius: 0.3rem;
+      font-family: var(--mono-font);
+      font-size: 0.82rem;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    button.action-btn {
+      background: var(--ble-color);
+      color: white;
+      border: none;
+      padding: 0.65rem 1.3rem;
+      font-size: 0.92rem;
+      font-weight: 600;
+      border-radius: 0.55rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      transition: all 0.15s ease-in-out;
+    }
+
+    button.action-btn.serial {
+      background: var(--accent);
+      color: #090d16;
+    }
+
+    button.action-btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      filter: brightness(1.1);
+    }
+
+    button.action-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-secondary {
+      background: var(--border);
+      color: var(--text);
+      border: none;
+      padding: 0.65rem 1.1rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+      border-radius: 0.55rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: #334155;
+    }
+
+    .btn-secondary:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .file-dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 0.75rem;
+      padding: 2.25rem 1.5rem;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: rgba(15, 23, 42, 0.4);
+    }
+
+    .file-dropzone:hover {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.03);
+    }
+
+    .file-dropzone.has-file {
+      border-color: var(--success);
+      background: rgba(16, 185, 129, 0.05);
+    }
+
+    .progress-bar-container {
+      width: 100%;
+      height: 10px;
+      background: var(--border);
+      border-radius: 9999px;
+      overflow: hidden;
+      margin-top: 1.25rem;
+      display: none;
+      box-shadow: inset 0 1px 2px rgba(0,0,0,0.4);
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--ble-color), var(--accent));
+      transition: width 0.1s linear;
+      border-radius: 9999px;
+    }
+
+    .progress-info {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+      display: none;
+      font-family: var(--mono-font);
+    }
+
+    .terminal-container {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .terminal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .terminal {
+      background: #040711;
+      border: 1px solid var(--border);
+      border-radius: 0.6rem;
+      padding: 1rem;
+      font-family: var(--mono-font);
+      font-size: 0.82rem;
+      height: 260px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      color: #7dd3fc;
+      line-height: 1.5;
+    }
+
+    .log-entry {
+      margin-bottom: 0.25rem;
+    }
+
+    .highlight-tip {
+      color: var(--warning);
+      font-size: 0.85rem;
+      margin-top: 0.5rem;
+    }
+
+    /* Book Manager Table & Controls */
+    .books-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+
+    .books-table th {
+      text-align: left;
+      padding: 0.75rem 0.6rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .books-table td {
+      padding: 0.85rem 0.6rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      vertical-align: middle;
+    }
+
+    .books-table tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .book-title-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+
+    .book-title-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .book-filename {
+      font-family: var(--mono-font);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .badge-active {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+      border: 1px solid var(--success);
+      font-size: 0.68rem;
+      font-weight: 700;
+      padding: 0.15rem 0.5rem;
+      border-radius: 9999px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+
+    .table-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.4rem;
+      align-items: center;
+    }
+
+    .btn-action-small {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 0.35rem 0.65rem;
+      border-radius: 0.4rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      transition: all 0.15s;
+    }
+
+    .btn-action-small:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text);
+    }
+
+    .btn-action-small.btn-read {
+      color: var(--accent);
+      border-color: rgba(56, 189, 248, 0.3);
+    }
+    .btn-action-small.btn-read:hover {
+      background: rgba(56, 189, 248, 0.15);
+      border-color: var(--accent);
+    }
+
+    .btn-action-small.btn-rename {
+      color: #cbd5e1;
+    }
+    .btn-action-small.btn-rename:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+    }
+
+    .btn-action-small.btn-delete {
+      color: var(--danger);
+      border-color: rgba(239, 68, 68, 0.3);
+    }
+    .btn-action-small.btn-delete:hover {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: var(--danger);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="title-group">
+        <h1>ESP32-S3 E-Reader Studio</h1>
+        <p>Wirelessly sync books via Web Bluetooth (BLE) or upload over USB Serial</p>
+      </div>
+      <div class="badge-container">
+        <span id="connection-status" class="badge">
+          <span class="dot"></span>
+          <span>Disconnected</span>
+        </span>
+      </div>
+    </header>
+
+    <!-- Connection Mode Card -->
+    <div class="card">
+      <div class="tabs">
+        <button id="tab-ble" class="tab-btn active">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6.5 6.5 17.5 17.5 12 23 12 1 17.5 6.5 6.5 17.5"></polyline>
+          </svg>
+          Web Bluetooth (BLE)
+        </button>
+        <button id="tab-serial" class="tab-btn serial-tab">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+          </svg>
+          Web Serial (USB-C)
+        </button>
+      </div>
+
+      <!-- BLE Connection Panel -->
+      <div id="panel-ble">
+        <div class="instruction-box">
+          <p style="font-weight: 600; margin-bottom: 0.4rem; color: var(--ble-color);">How to Connect Wirelessly via BLE:</p>
+          <ol>
+            <li>On your E-Reader, open the <strong>Library Browser</strong> from the settings menu.</li>
+            <li>Scroll down and select <code>[+] Add More Books (BLE)</code> to begin the <strong>60-second pairing countdown</strong>.</li>
+            <li>Click <strong>Connect E-Reader via BLE</strong> below and choose <code>ESP32-Ereader</code> from the browser popup.</li>
+          </ol>
+        </div>
+        <div class="btn-group">
+          <button id="ble-connect-btn" class="action-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6.5 6.5 17.5 17.5 12 23 12 1 17.5 6.5 6.5 17.5"></polyline>
+            </svg>
+            Connect E-Reader via BLE
+          </button>
+          <button id="ble-disconnect-btn" class="btn-secondary" disabled>Disconnect BLE</button>
+        </div>
+      </div>
+
+      <!-- Serial Connection Panel -->
+      <div id="panel-serial" style="display: none;">
+        <div class="instruction-box">
+          <p style="font-weight: 600; margin-bottom: 0.4rem; color: var(--accent);">How to Connect via USB Serial:</p>
+          <ol>
+            <li>Plug your XIAO ESP32-S3 into your computer using a USB-C data cable.</li>
+            <li>Click <strong>Connect USB Serial Port</strong> and select the ESP32 CDC Modem device (115200 baud).</li>
+          </ol>
+        </div>
+        <div class="btn-group">
+          <button id="serial-connect-btn" class="action-btn serial">Connect USB Serial Port</button>
+          <button id="serial-disconnect-btn" class="btn-secondary" disabled>Disconnect Serial</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Book Transfer Card -->
+    <div class="card">
+      <h2>Book Transfer (.ebk File)</h2>
+      <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
+        Select an <code>.ebk</code> binary created with <code>tools/ebk_converter.py</code> to send directly into the reader's flash storage.
+      </p>
+
+      <div class="file-dropzone" id="dropzone">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 0.5rem;">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+        </svg>
+        <p id="dropzone-text" style="font-weight: 600;">Drag and drop an <strong>.ebk</strong> book here, or click to browse</p>
+        <p id="dropzone-sub" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Supports both v1 bitmap and v2 dynamic text formats</p>
+        <input type="file" id="file-input" accept=".ebk" style="display: none;">
+      </div>
+
+      <div class="progress-bar-container" id="progress-container">
+        <div class="progress-bar" id="progress-bar"></div>
+      </div>
+      <div class="progress-info" id="progress-info">
+        <span id="progress-status">Streaming...</span>
+        <span id="progress-pct">0%</span>
+      </div>
+
+      <div style="margin-top: 1.25rem;">
+        <button id="upload-btn" class="action-btn" disabled>
+          Send Book to E-Reader
+        </button>
+      </div>
+    </div>
+
+    <!-- Device Library & Book Management Card -->
+    <div class="card" id="library-manager-card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem; flex-wrap: wrap; gap: 0.5rem;">
+        <h2 style="margin-bottom: 0;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+          </svg>
+          Device Library & Storage Manager
+        </h2>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <span id="book-count-badge" class="badge">0 Books</span>
+          <button id="refresh-books-btn" class="btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 0.4rem;" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+            Refresh Library
+          </button>
+        </div>
+      </div>
+
+      <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1.25rem;">
+        View, select active book, rename, or delete books stored on your E-Reader over Bluetooth Low Energy.
+      </p>
+
+      <!-- Storage Usage Bar -->
+      <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid var(--border); border-radius: 0.6rem; padding: 1rem; margin-bottom: 1.25rem;">
+        <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.4rem;">
+          <span style="font-weight: 600; color: var(--text);">Flash Storage (LittleFS)</span>
+          <span id="storage-text" style="font-family: var(--mono-font); color: var(--accent);">-- / -- MB used (--%)</span>
+        </div>
+        <div style="width: 100%; height: 8px; background: var(--border); border-radius: 9999px; overflow: hidden;">
+          <div id="storage-bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--ble-color)); border-radius: 9999px; transition: width 0.3s ease;"></div>
+        </div>
+      </div>
+
+      <!-- Books List Container -->
+      <div id="books-list-container">
+        <div id="books-empty" style="text-align: center; padding: 2.25rem 1rem; color: var(--text-muted); font-size: 0.9rem; border: 1px dashed var(--border); border-radius: 0.6rem;">
+          Connect to your E-Reader via BLE to view and manage books stored on the device.
+        </div>
+        <div id="books-table-wrapper" style="display: none; overflow-x: auto;">
+          <table class="books-table">
+            <thead>
+              <tr>
+                <th>Book & Filename</th>
+                <th>Size</th>
+                <th>Progress</th>
+                <th style="text-align: right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="books-tbody">
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Wireless Firmware OTA Card -->
+    <div class="card" id="ota-card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem; flex-wrap: wrap; gap: 0.5rem;">
+        <h2 style="margin-bottom: 0; color: #c084fc;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+          Wireless Firmware OTA Update (.bin)
+        </h2>
+        <span id="ota-badge" class="badge" style="background: rgba(192, 132, 252, 0.15); color: #c084fc; border: 1px solid #c084fc;">Dual OTA Slot (1.75 MB)</span>
+      </div>
+
+      <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1.25rem;">
+        Flash new firmware binaries (<code>firmware.bin</code>) over Bluetooth Low Energy directly into the secondary OTA partition. The e-reader verifies the checksum and restarts automatically into the new build.
+      </p>
+
+      <div class="file-dropzone" id="ota-dropzone" style="border-color: rgba(192, 132, 252, 0.4);">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#c084fc" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 0.5rem;">
+          <path d="M12 2v10"></path>
+          <path d="m16 8-4-4-4 4"></path>
+          <path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"></path>
+        </svg>
+        <p id="ota-dropzone-text" style="font-weight: 600;">Drag and drop a <strong>firmware.bin</strong> file here, or click to browse</p>
+        <p id="ota-dropzone-sub" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Typically found in <code>.pio/build/seeed_xiao_esp32s3/firmware.bin</code></p>
+        <input type="file" id="ota-file-input" accept=".bin" style="display: none;">
+      </div>
+
+      <div class="progress-bar-container" id="ota-progress-container">
+        <div class="progress-bar" id="ota-progress-bar" style="background: linear-gradient(90deg, #c084fc, var(--accent));"></div>
+      </div>
+      <div class="progress-info" id="ota-progress-info">
+        <span id="ota-progress-status">Preparing OTA flash...</span>
+        <span id="ota-progress-pct">0%</span>
+      </div>
+
+      <div style="margin-top: 1.25rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+        <button id="ota-flash-btn" class="action-btn" style="background: #a855f7;" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+          Flash Firmware via BLE
+        </button>
+        <span style="font-size: 0.8rem; color: var(--text-muted);">
+          ⚡ Takes ~10s at 65 KB/s. Keep e-reader close to device.
+        </span>
+      </div>
+    </div>
+
+    <!-- Diagnostic Console -->
+    <div class="card">
+      <div class="terminal-container">
+        <div class="terminal-header">
+          <h2>Console & Event Diagnostics</h2>
+          <button id="clear-term-btn" class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;">Clear</button>
+        </div>
+        <div class="terminal" id="terminal"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // BLE Service and Characteristic UUIDs (Matching include/ble_sync_manager.h)
+    const BLE_SERVICE_UUID   = '19b10000-e8f2-537e-4f6c-d104768a1214';
+    const BLE_CHAR_CTRL_UUID = '19b10001-e8f2-537e-4f6c-d104768a1214';
+    const BLE_CHAR_DATA_UUID = '19b10002-e8f2-537e-4f6c-d104768a1214';
+
+    // State Variables
+    let activeMode = 'ble'; // 'ble' or 'serial'
+    let bleDevice = null;
+    let bleServer = null;
+    let bleCtrlChar = null;
+    let bleDataChar = null;
+
+    let serialPort = null;
+    let serialReader = null;
+    let serialWriter = null;
+
+    let selectedFile = null;
+    let isTransferring = false;
+
+    // DOM Elements
+    const tabBle = document.getElementById('tab-ble');
+    const tabSerial = document.getElementById('tab-serial');
+    const panelBle = document.getElementById('panel-ble');
+    const panelSerial = document.getElementById('panel-serial');
+
+    const bleConnectBtn = document.getElementById('ble-connect-btn');
+    const bleDisconnectBtn = document.getElementById('ble-disconnect-btn');
+    const serialConnectBtn = document.getElementById('serial-connect-btn');
+    const serialDisconnectBtn = document.getElementById('serial-disconnect-btn');
+
+    const statusBadge = document.getElementById('connection-status');
+    const terminal = document.getElementById('terminal');
+    const clearTermBtn = document.getElementById('clear-term-btn');
+
+    const dropzone = document.getElementById('dropzone');
+    const dropzoneText = document.getElementById('dropzone-text');
+    const dropzoneSub = document.getElementById('dropzone-sub');
+    const fileInput = document.getElementById('file-input');
+    const uploadBtn = document.getElementById('upload-btn');
+    const progressContainer = document.getElementById('progress-container');
+    const progressBar = document.getElementById('progress-bar');
+    const progressInfo = document.getElementById('progress-info');
+    const progressStatus = document.getElementById('progress-status');
+    const progressPct = document.getElementById('progress-pct');
+
+    // Book Management DOM Elements
+    const refreshBooksBtn = document.getElementById('refresh-books-btn');
+    const bookCountBadge = document.getElementById('book-count-badge');
+    const storageText = document.getElementById('storage-text');
+    const storageBar = document.getElementById('storage-bar');
+    const booksEmpty = document.getElementById('books-empty');
+    const booksTableWrapper = document.getElementById('books-table-wrapper');
+    const booksTbody = document.getElementById('books-tbody');
+
+    // OTA DOM Elements
+    const otaDropzone = document.getElementById('ota-dropzone');
+    const otaDropzoneText = document.getElementById('ota-dropzone-text');
+    const otaDropzoneSub = document.getElementById('ota-dropzone-sub');
+    const otaFileInput = document.getElementById('ota-file-input');
+    const otaFlashBtn = document.getElementById('ota-flash-btn');
+    const otaProgressContainer = document.getElementById('ota-progress-container');
+    const otaProgressBar = document.getElementById('ota-progress-bar');
+    const otaProgressInfo = document.getElementById('ota-progress-info');
+    const otaProgressStatus = document.getElementById('ota-progress-status');
+    const otaProgressPct = document.getElementById('ota-progress-pct');
+
+    let selectedOtaFile = null;
+    let isFlashingOta = false;
+
+    function log(message, color = '') {
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      if (color) entry.style.color = color;
+      const timestamp = new Date().toLocaleTimeString();
+      entry.textContent = `[${timestamp}] ${message}`;
+      terminal.appendChild(entry);
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    clearTermBtn.addEventListener('click', () => {
+      terminal.innerHTML = '';
+    });
+
+    // Tab Navigation
+    tabBle.addEventListener('click', () => {
+      activeMode = 'ble';
+      tabBle.classList.add('active');
+      tabSerial.classList.remove('active');
+      panelBle.style.display = 'block';
+      panelSerial.style.display = 'none';
+      uploadBtn.textContent = 'Send Book via BLE';
+      uploadBtn.className = 'action-btn';
+      checkReadyToUpload();
+    });
+
+    tabSerial.addEventListener('click', () => {
+      activeMode = 'serial';
+      tabSerial.classList.add('active');
+      tabBle.classList.remove('active');
+      panelSerial.style.display = 'block';
+      panelBle.style.display = 'none';
+      uploadBtn.textContent = 'Send Book via USB Serial';
+      uploadBtn.className = 'action-btn serial';
+      checkReadyToUpload();
+    });
+
+    function updateStatusBadge(connected, type = '') {
+      statusBadge.className = 'badge';
+      const label = statusBadge.querySelector('span:last-child');
+      if (connected) {
+        if (type === 'ble') {
+          statusBadge.classList.add('connected-ble');
+          label.textContent = 'BLE Connected (ESP32-Ereader)';
+        } else {
+          statusBadge.classList.add('connected-serial');
+          label.textContent = 'USB Serial Connected';
+        }
+      } else {
+        label.textContent = 'Disconnected';
+      }
+      checkReadyToUpload();
+    }
+
+    function checkReadyToUpload() {
+      const isConnected = (activeMode === 'ble' && bleServer && bleServer.connected) ||
+                          (activeMode === 'serial' && serialPort && serialPort.readable);
+      uploadBtn.disabled = !isConnected || !selectedFile || isTransferring || isFlashingOta;
+      if (otaFlashBtn) {
+        otaFlashBtn.disabled = !(bleServer && bleServer.connected) || !selectedOtaFile || isTransferring || isFlashingOta;
+      }
+    }
+
+    // =========================================================================
+    // WEB BLUETOOTH (BLE) HANDLER
+    // =========================================================================
+    bleConnectBtn.addEventListener('click', async () => {
+      if (!navigator.bluetooth) {
+        alert('Web Bluetooth is not supported in this browser. Please use Chrome, Edge, Opera, or Bluefy (iOS).');
+        return;
+      }
+
+      try {
+        log('[BLE] Requesting Bluetooth device with name "ESP32-Ereader"...');
+        bleDevice = await navigator.bluetooth.requestDevice({
+          filters: [{ name: 'ESP32-Ereader' }],
+          optionalServices: [BLE_SERVICE_UUID]
+        });
+
+        bleDevice.addEventListener('gattserverdisconnected', onBleDisconnected);
+
+        log('[BLE] Device selected! Connecting to GATT server...');
+        bleServer = await bleDevice.gatt.connect();
+
+        log('[BLE] Connected! Locating E-Reader service...');
+        const service = await bleServer.getPrimaryService(BLE_SERVICE_UUID);
+
+        log('[BLE] Getting control and data characteristics...');
+        bleCtrlChar = await service.getCharacteristic(BLE_CHAR_CTRL_UUID);
+        bleDataChar = await service.getCharacteristic(BLE_CHAR_DATA_UUID);
+
+        await bleCtrlChar.startNotifications();
+        bleCtrlChar.addEventListener('characteristicvaluechanged', onBleNotification);
+
+        log('[BLE] Ready! Paired successfully with ESP32-Ereader.', '#10b981');
+        bleConnectBtn.disabled = true;
+        bleDisconnectBtn.disabled = false;
+        refreshBooksBtn.disabled = false;
+        updateStatusBadge(true, 'ble');
+
+        // Automatically fetch library stored on E-Reader
+        setTimeout(requestBookList, 300);
+
+      } catch (err) {
+        log('[BLE ERR] Connection failed: ' + err.message, '#ef4444');
+        updateStatusBadge(false);
+      }
+    });
+
+    bleDisconnectBtn.addEventListener('click', () => {
+      if (bleDevice && bleDevice.gatt.connected) {
+        bleDevice.gatt.disconnect();
+      }
+    });
+
+    function onBleDisconnected() {
+      log('[BLE] Disconnected from E-Reader.', '#f59e0b');
+      bleConnectBtn.disabled = false;
+      bleDisconnectBtn.disabled = true;
+      refreshBooksBtn.disabled = true;
+      bleServer = null;
+      bleCtrlChar = null;
+      bleDataChar = null;
+      updateStatusBadge(false);
+      resetBookListUI();
+    }
+
+    let bleReadyResolver = null;
+    let bleFinishResolver = null;
+    let pendingOpResolver = null;
+    let bookListChunksBuffer = '';
+
+    function onBleNotification(event) {
+      const val = event.target.value;
+      if (val.byteLength < 1) return;
+      const status = val.getUint8(0);
+
+      if (status === 0x01) {
+        log('[BLE] E-Reader is READY for file stream.', '#10b981');
+        if (bleReadyResolver) {
+          bleReadyResolver();
+          bleReadyResolver = null;
+        }
+      } else if (status === 0x02) {
+        log('[BLE SUCCESS] Operation confirmed by E-Reader.', '#10b981');
+        if (bleFinishResolver) {
+          bleFinishResolver({ success: true });
+          bleFinishResolver = null;
+        }
+        if (pendingOpResolver) {
+          pendingOpResolver({ success: true });
+          pendingOpResolver = null;
+        }
+      } else if (status === 0x03) {
+        log('[BLE ERR] E-Reader reported an error!', '#ef4444');
+        if (bleFinishResolver) {
+          bleFinishResolver({ success: false, reason: 'E-Reader reported storage or write error' });
+          bleFinishResolver = null;
+        }
+        if (pendingOpResolver) {
+          pendingOpResolver({ success: false, reason: 'Operation failed on E-Reader' });
+          pendingOpResolver = null;
+        }
+      } else if (status === 0x04) {
+        log('[BLE] Operation was aborted.', '#f59e0b');
+        if (bleFinishResolver) {
+          bleFinishResolver({ success: false, reason: 'Operation was aborted' });
+          bleFinishResolver = null;
+        }
+        if (pendingOpResolver) {
+          pendingOpResolver({ success: false, reason: 'Aborted' });
+          pendingOpResolver = null;
+        }
+      } else if (status === 0x05) {
+        // STATUS_BOOK_LIST: chunked JSON stream
+        // Byte 1: has_more (1 = more chunks coming, 0 = final chunk)
+        // Bytes 2..N: JSON text slice
+        const hasMore = val.getUint8(1);
+        const sliceBytes = new Uint8Array(val.buffer, val.byteOffset + 2, val.byteLength - 2);
+        const sliceText = new TextDecoder().decode(sliceBytes);
+        bookListChunksBuffer += sliceText;
+
+        if (hasMore === 0) {
+          try {
+            const data = JSON.parse(bookListChunksBuffer);
+            renderBookList(data);
+            log(`[BLE] Loaded ${data.books ? data.books.length : 0} book(s) from device library.`);
+          } catch (err) {
+            log('[BLE ERR] Failed to parse library JSON: ' + err.message, '#ef4444');
+          } finally {
+            bookListChunksBuffer = '';
+          }
+        }
+      }
+    }
+
+    // =========================================================================
+    // DEVICE BOOK MANAGEMENT API (BLE)
+    // =========================================================================
+    refreshBooksBtn.addEventListener('click', () => {
+      requestBookList();
+    });
+
+    async function requestBookList() {
+      if (!bleCtrlChar || !bleServer || !bleServer.connected) {
+        alert('Please connect to the E-Reader over BLE first!');
+        return;
+      }
+      try {
+        bookListChunksBuffer = '';
+        log('[BLE] Requesting library & storage info from E-Reader...');
+        const packet = new Uint8Array([0x04]); // CMD_LIST_BOOKS
+        await bleCtrlChar.writeValue(packet);
+      } catch (err) {
+        log('[BLE ERR] Failed to request library: ' + err.message, '#ef4444');
+      }
+    }
+
+    function renderBookList(data) {
+      if (!data) return;
+
+      // Update Storage Usage Display
+      if (typeof data.total === 'number' && typeof data.used === 'number') {
+        const totalMB = (data.total / (1024 * 1024)).toFixed(2);
+        const usedMB = (data.used / (1024 * 1024)).toFixed(2);
+        const pct = data.total > 0 ? Math.min(100, Math.round((data.used / data.total) * 100)) : 0;
+
+        storageText.textContent = `${usedMB} / ${totalMB} MB used (${pct}%)`;
+        storageBar.style.width = pct + '%';
+        if (pct > 90) {
+          storageBar.style.background = 'var(--danger)';
+        } else if (pct > 75) {
+          storageBar.style.background = 'var(--warning)';
+        } else {
+          storageBar.style.background = 'linear-gradient(90deg, var(--accent), var(--ble-color))';
+        }
+      }
+
+      // Update Books Table
+      const books = data.books || [];
+      bookCountBadge.textContent = `${books.length} Book${books.length === 1 ? '' : 's'}`;
+
+      if (books.length === 0) {
+        booksEmpty.style.display = 'block';
+        booksEmpty.textContent = 'No books found on E-Reader storage. Send a book using the transfer card above!';
+        booksTableWrapper.style.display = 'none';
+        return;
+      }
+
+      booksEmpty.style.display = 'none';
+      booksTableWrapper.style.display = 'block';
+      booksTbody.innerHTML = '';
+
+      const activePath = data.active || '';
+
+      books.forEach(b => {
+        const tr = document.createElement('tr');
+        const isActive = (b.file === activePath || (b.file && activePath.endsWith(b.file)));
+
+        // Col 1: Title & Filename
+        const tdTitle = document.createElement('td');
+        tdTitle.className = 'book-title-cell';
+
+        const titleRow = document.createElement('div');
+        titleRow.className = 'book-title-row';
+        titleRow.textContent = b.title || b.file;
+
+        if (isActive) {
+          const pill = document.createElement('span');
+          pill.className = 'badge-active';
+          pill.textContent = 'Active Book';
+          titleRow.appendChild(pill);
+        }
+
+        const fnameRow = document.createElement('div');
+        fnameRow.className = 'book-filename';
+        fnameRow.textContent = b.file;
+
+        tdTitle.appendChild(titleRow);
+        tdTitle.appendChild(fnameRow);
+
+        // Col 2: Size
+        const tdSize = document.createElement('td');
+        tdSize.style.fontFamily = 'var(--mono-font)';
+        tdSize.style.fontSize = '0.82rem';
+        tdSize.textContent = (b.size >= 1048576)
+          ? `${(b.size / 1048576).toFixed(2)} MB`
+          : `${(b.size / 1024).toFixed(1)} KB`;
+
+        // Col 3: Progress
+        const tdProg = document.createElement('td');
+        tdProg.style.fontFamily = 'var(--mono-font)';
+        tdProg.style.fontSize = '0.82rem';
+        if (b.tot > 0) {
+          const progPct = Math.round((Math.max(1, b.cur) / b.tot) * 100);
+          tdProg.textContent = `Page ${b.cur || 1} / ${b.tot} (${progPct}%)`;
+        } else {
+          tdProg.textContent = 'New';
+        }
+
+        // Col 4: Actions (Read, Rename, Delete)
+        const tdActions = document.createElement('td');
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'table-actions';
+
+        // Read / Select Book button
+        if (!isActive) {
+          const btnRead = document.createElement('button');
+          btnRead.className = 'btn-action-small btn-read';
+          btnRead.title = 'Switch E-Reader to read this book now';
+          btnRead.innerHTML = `
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+            Read
+          `;
+          btnRead.addEventListener('click', () => selectBookBLE(b.file));
+          actionsDiv.appendChild(btnRead);
+        }
+
+        // Rename button
+        const btnRename = document.createElement('button');
+        btnRename.className = 'btn-action-small btn-rename';
+        btnRename.title = 'Rename this book file on E-Reader';
+        btnRename.innerHTML = `
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 20h9"></path>
+            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+          </svg>
+          Rename
+        `;
+        btnRename.addEventListener('click', () => renameBookBLE(b.file));
+        actionsDiv.appendChild(btnRename);
+
+        // Delete button
+        const btnDelete = document.createElement('button');
+        btnDelete.className = 'btn-action-small btn-delete';
+        btnDelete.title = 'Permanently delete this book from E-Reader';
+        btnDelete.innerHTML = `
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+          Delete
+        `;
+        btnDelete.addEventListener('click', () => deleteBookBLE(b.file));
+        actionsDiv.appendChild(btnDelete);
+
+        tdActions.appendChild(actionsDiv);
+
+        tr.appendChild(tdTitle);
+        tr.appendChild(tdSize);
+        tr.appendChild(tdProg);
+        tr.appendChild(tdActions);
+        booksTbody.appendChild(tr);
+      });
+    }
+
+    function resetBookListUI() {
+      booksEmpty.style.display = 'block';
+      booksEmpty.textContent = 'Connect to your E-Reader via BLE to view and manage books stored on the device.';
+      booksTableWrapper.style.display = 'none';
+      bookCountBadge.textContent = '0 Books';
+      storageText.textContent = '-- / -- MB used (--%)';
+      storageBar.style.width = '0%';
+    }
+
+    async function selectBookBLE(filename) {
+      if (!bleCtrlChar || !bleServer || !bleServer.connected) return;
+      try {
+        log(`[BLE] Switching active book on E-Reader to '${filename}'...`);
+        const enc = new TextEncoder();
+        const fnameBytes = enc.encode(filename);
+        const packet = new Uint8Array(1 + fnameBytes.length);
+        packet[0] = 0x07; // CMD_SELECT_BOOK
+        packet.set(fnameBytes, 1);
+
+        const opPromise = new Promise((resolve, reject) => {
+          pendingOpResolver = resolve;
+          setTimeout(() => reject(new Error('Timeout waiting for switch confirmation')), 5000);
+        });
+
+        await bleCtrlChar.writeValue(packet);
+        const res = await opPromise;
+        if (res && res.success) {
+          log(`[BLE SUCCESS] E-Reader switched to '${filename}'!`, '#10b981');
+          setTimeout(requestBookList, 300);
+        } else {
+          throw new Error(res ? res.reason : 'Failed to switch book');
+        }
+      } catch (err) {
+        log('[BLE ERR] Select book error: ' + err.message, '#ef4444');
+      }
+    }
+
+    async function renameBookBLE(oldFilename) {
+      if (!bleCtrlChar || !bleServer || !bleServer.connected) return;
+      const cleanOld = oldFilename.startsWith('/') ? oldFilename.substring(1) : oldFilename;
+      const newName = prompt(`Enter new filename for "${cleanOld}":`, cleanOld);
+      if (!newName || newName.trim() === '' || newName.trim() === cleanOld) return;
+
+      let targetNew = newName.trim();
+      if (!targetNew.toLowerCase().endsWith('.ebk')) {
+        targetNew += '.ebk';
+      }
+
+      try {
+        log(`[BLE] Renaming '${cleanOld}' -> '${targetNew}' on E-Reader...`);
+        const enc = new TextEncoder();
+        const oldBytes = enc.encode(cleanOld);
+        const newBytes = enc.encode(targetNew);
+
+        // Packet structure:
+        // Byte 0: CMD_RENAME_BOOK (0x06)
+        // Byte 1: uint8_t old_name_length
+        // Bytes 2..(2+old_len-1): old_name
+        // Bytes (2+old_len)..N: new_name
+        const packet = new Uint8Array(2 + oldBytes.length + newBytes.length);
+        packet[0] = 0x06;
+        packet[1] = oldBytes.length;
+        packet.set(oldBytes, 2);
+        packet.set(newBytes, 2 + oldBytes.length);
+
+        const opPromise = new Promise((resolve, reject) => {
+          pendingOpResolver = resolve;
+          setTimeout(() => reject(new Error('Timeout waiting for rename confirmation')), 5000);
+        });
+
+        await bleCtrlChar.writeValue(packet);
+        const res = await opPromise;
+        if (res && res.success) {
+          log(`[BLE SUCCESS] Book renamed to '${targetNew}'!`, '#10b981');
+          setTimeout(requestBookList, 300);
+        } else {
+          throw new Error(res ? res.reason : 'Failed to rename book');
+        }
+      } catch (err) {
+        log('[BLE ERR] Rename book error: ' + err.message, '#ef4444');
+      }
+    }
+
+    async function deleteBookBLE(filename) {
+      if (!bleCtrlChar || !bleServer || !bleServer.connected) return;
+      const cleanName = filename.startsWith('/') ? filename.substring(1) : filename;
+      if (!confirm(`Are you sure you want to permanently delete "${cleanName}" from your E-Reader flash storage?`)) {
+        return;
+      }
+
+      try {
+        log(`[BLE] Deleting '${cleanName}' from E-Reader...`);
+        const enc = new TextEncoder();
+        const fnameBytes = enc.encode(cleanName);
+        const packet = new Uint8Array(1 + fnameBytes.length);
+        packet[0] = 0x05; // CMD_DELETE_BOOK
+        packet.set(fnameBytes, 1);
+
+        const opPromise = new Promise((resolve, reject) => {
+          pendingOpResolver = resolve;
+          setTimeout(() => reject(new Error('Timeout waiting for delete confirmation')), 5000);
+        });
+
+        await bleCtrlChar.writeValue(packet);
+        const res = await opPromise;
+        if (res && res.success) {
+          log(`[BLE SUCCESS] '${cleanName}' deleted from E-Reader!`, '#10b981');
+          setTimeout(requestBookList, 300);
+        } else {
+          throw new Error(res ? res.reason : 'Failed to delete book');
+        }
+      } catch (err) {
+        log('[BLE ERR] Delete book error: ' + err.message, '#ef4444');
+      }
+    }
+
+    // =========================================================================
+    // WEB SERIAL (USB) HANDLER
+    // =========================================================================
+    serialConnectBtn.addEventListener('click', async () => {
+      if (!('serial' in navigator)) {
+        alert('Web Serial is not supported in this browser. Please use Chrome, Edge, or Opera.');
+        return;
+      }
+
+      try {
+        serialPort = await navigator.serial.requestPort();
+        await serialPort.open({ baudRate: 115200 });
+
+        serialConnectBtn.disabled = true;
+        serialDisconnectBtn.disabled = false;
+        updateStatusBadge(true, 'serial');
+
+        log('[SERIAL] Connected to XIAO ESP32-S3 USB Serial Port.', '#10b981');
+        readSerialStream();
+      } catch (err) {
+        log('[SERIAL ERR] Port connection failed: ' + err.message, '#ef4444');
+        updateStatusBadge(false);
+      }
+    });
+
+    serialDisconnectBtn.addEventListener('click', async () => {
+      try {
+        if (serialReader) {
+          await serialReader.cancel();
+          serialReader = null;
+        }
+        if (serialPort) {
+          await serialPort.close();
+          serialPort = null;
+        }
+        serialConnectBtn.disabled = false;
+        serialDisconnectBtn.disabled = true;
+        updateStatusBadge(false);
+        log('[SERIAL] Disconnected from serial port.');
+      } catch (err) {
+        log('[SERIAL ERR] Disconnect error: ' + err.message, '#ef4444');
+      }
+    });
+
+    async function readSerialStream() {
+      const textDecoder = new TextDecoderStream();
+      const closed = serialPort.readable.pipeTo(textDecoder.writable);
+      serialReader = textDecoder.readable.getReader();
+
+      try {
+        while (true) {
+          const { value, done } = await serialReader.read();
+          if (done) break;
+          if (value) {
+            terminal.textContent += value;
+            terminal.scrollTop = terminal.scrollHeight;
+          }
+        }
+      } catch (err) {
+        log('[SERIAL ERR] Stream read error: ' + err.message, '#ef4444');
+      } finally {
+        if (serialReader) serialReader.releaseLock();
+      }
+    }
+
+    // =========================================================================
+    // FILE SELECTION (DRAG & DROP)
+    // =========================================================================
+    dropzone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) handleFile(e.target.files[0]);
+    });
+
+    dropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropzone.style.borderColor = 'var(--accent)';
+    });
+
+    dropzone.addEventListener('dragleave', () => {
+      dropzone.style.borderColor = 'var(--border)';
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.style.borderColor = 'var(--border)';
+      if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+    });
+
+    function handleFile(file) {
+      if (!file.name.toLowerCase().endsWith('.ebk')) {
+        alert('Please choose an .ebk book file created by tools/ebk_converter.py');
+        return;
+      }
+      selectedFile = file;
+      dropzone.classList.add('has-file');
+      dropzoneText.textContent = `Selected: ${file.name}`;
+      dropzoneSub.textContent = `File Size: ${(file.size / 1024).toFixed(1)} KB (${file.size.toLocaleString()} bytes)`;
+      log(`[FILE] Loaded book '${file.name}' (${(file.size / 1024).toFixed(1)} KB).`);
+      checkReadyToUpload();
+    }
+
+    // =========================================================================
+    // UPLOAD EXECUTION
+    // =========================================================================
+    uploadBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+
+      if (activeMode === 'ble') {
+        await uploadViaBLE(selectedFile);
+      } else {
+        await uploadViaSerial(selectedFile);
+      }
+    });
+
+    async function uploadViaBLE(file) {
+      if (!bleServer || !bleServer.connected || !bleCtrlChar || !bleDataChar) {
+        alert('Please connect to the E-Reader over BLE first!');
+        return;
+      }
+
+      isTransferring = true;
+      checkReadyToUpload();
+      progressContainer.style.display = 'block';
+      progressInfo.style.display = 'flex';
+      progressBar.style.width = '0%';
+      progressPct.textContent = '0%';
+      progressStatus.textContent = 'Waiting for E-Reader to prepare storage...';
+
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const fileBytes = new Uint8Array(arrayBuffer);
+        const fileSize = fileBytes.length;
+        const fileName = file.name;
+
+        log(`[BLE] Initializing transfer for '${fileName}' (${(fileSize / 1024).toFixed(1)} KB)...`);
+
+        // Prepare promise to wait for E-Reader's STATUS_READY (0x01)
+        const readyPromise = new Promise((resolve, reject) => {
+          bleReadyResolver = resolve;
+          setTimeout(() => reject(new Error('Timeout waiting for E-Reader READY handshake')), 5000);
+        });
+
+        // Prepare CMD_START_TRANSFER packet:
+        // Byte 0: 0x01
+        // Bytes 1..4: uint32_t fileSize (little-endian)
+        // Bytes 5..N: fileName in UTF-8
+        const encoder = new TextEncoder();
+        const nameBytes = encoder.encode(fileName);
+        const startPacket = new Uint8Array(1 + 4 + nameBytes.length);
+        startPacket[0] = 0x01; // CMD_START_TRANSFER
+
+        const view = new DataView(startPacket.buffer);
+        view.setUint32(1, fileSize, true); // Little-endian
+        startPacket.set(nameBytes, 5);
+
+        await bleCtrlChar.writeValue(startPacket);
+        
+        // Await confirmation that E-Reader opened the file and is ready
+        await readyPromise;
+        log('[BLE] E-Reader confirmed ready. Streaming with flow-controlled write-response...');
+
+        // Chunking with Write-With-Response
+        // With writeValueWithResponse, every packet is confirmed by ESP32 before sending next,
+        // eliminating packet drop, buffer overflow, and sync issues!
+        const chunkSize = 256;
+        let offset = 0;
+        const startTime = Date.now();
+
+        // Prepare promise to wait for E-Reader's STATUS_SUCCESS / STATUS_ERROR
+        const finishPromise = new Promise((resolve) => {
+          bleFinishResolver = resolve;
+        });
+
+        while (offset < fileSize) {
+          const chunk = fileBytes.slice(offset, offset + chunkSize);
+          
+          // Write With Response for 100% reliable flow-controlled transmission
+          if (bleDataChar.writeValueWithResponse) {
+            await bleDataChar.writeValueWithResponse(chunk);
+          } else {
+            await bleDataChar.writeValue(chunk);
+          }
+          offset += chunk.length;
+
+          const pct = Math.floor((offset / fileSize) * 100);
+          progressBar.style.width = pct + '%';
+          progressPct.textContent = pct + '%';
+          progressStatus.textContent = `Streaming ${(offset / 1024).toFixed(1)} / ${(fileSize / 1024).toFixed(1)} KB`;
+        }
+
+        // Send CMD_FINISH_TRANSFER
+        log('[BLE] Streamed 100% of bytes. Finalizing and verifying with E-Reader...');
+        progressStatus.textContent = 'Verifying with E-Reader...';
+        const finishPacket = new Uint8Array([0x02]);
+        await bleCtrlChar.writeValue(finishPacket);
+
+        // Wait for E-Reader's verification notification
+        const result = await finishPromise;
+        if (result && result.success) {
+          const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+          const rate = ((fileSize / 1024) / duration).toFixed(1);
+          log(`[BLE SUCCESS] Book '${fileName}' verified and saved in ${duration}s (${rate} KB/s)!`, '#10b981');
+          progressStatus.textContent = 'Complete! E-Reader is opening book.';
+          progressBar.style.width = '100%';
+          progressPct.textContent = '100%';
+          setTimeout(requestBookList, 600);
+        } else {
+          throw new Error(result ? result.reason : 'E-Reader rejected the transfer');
+        }
+
+      } catch (err) {
+        log('[BLE ERR] Transfer failed: ' + err.message, '#ef4444');
+        progressStatus.textContent = 'Transfer Failed: ' + err.message;
+      } finally {
+        isTransferring = false;
+        bleReadyResolver = null;
+        bleFinishResolver = null;
+        checkReadyToUpload();
+      }
+    }
+
+    async function uploadViaSerial(file) {
+      if (!serialPort || !serialPort.writable) {
+        alert('Please connect USB Serial first!');
+        return;
+      }
+
+      isTransferring = true;
+      checkReadyToUpload();
+      progressContainer.style.display = 'block';
+      progressInfo.style.display = 'flex';
+      progressBar.style.width = '0%';
+      progressPct.textContent = '0%';
+      progressStatus.textContent = 'Streaming via USB-C...';
+
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        const chunkSize = 256;
+        let offset = 0;
+
+        serialWriter = serialPort.writable.getWriter();
+        while (offset < bytes.length) {
+          const chunk = bytes.slice(offset, offset + chunkSize);
+          await serialWriter.write(chunk);
+          offset += chunk.length;
+          const pct = Math.floor((offset / bytes.length) * 100);
+          progressBar.style.width = pct + '%';
+          progressPct.textContent = pct + '%';
+          await new Promise(r => setTimeout(r, 8));
+        }
+
+        log(`[SERIAL SUCCESS] Streamed ${bytes.length} bytes to USB serial!`, '#10b981');
+        progressStatus.textContent = 'Upload Finished!';
+      } catch (err) {
+        log('[SERIAL ERR] Upload failed: ' + err.message, '#ef4444');
+        progressStatus.textContent = 'Upload Failed!';
+      } finally {
+        if (serialWriter) serialWriter.releaseLock();
+        isTransferring = false;
+        checkReadyToUpload();
+      }
+    }
+
+    // =========================================================================
+    // WIRELESS FIRMWARE OTA (BLE)
+    // =========================================================================
+    otaDropzone.addEventListener('click', () => otaFileInput.click());
+    otaFileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) handleOtaFile(e.target.files[0]);
+    });
+
+    otaDropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      otaDropzone.style.borderColor = '#c084fc';
+    });
+
+    otaDropzone.addEventListener('dragleave', () => {
+      otaDropzone.style.borderColor = 'rgba(192, 132, 252, 0.4)';
+    });
+
+    otaDropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      otaDropzone.style.borderColor = 'rgba(192, 132, 252, 0.4)';
+      if (e.dataTransfer.files.length > 0) handleOtaFile(e.dataTransfer.files[0]);
+    });
+
+    function handleOtaFile(file) {
+      if (!file.name.toLowerCase().endsWith('.bin')) {
+        alert('Please choose a compiled .bin firmware binary (typically from .pio/build/seeed_xiao_esp32s3/firmware.bin)');
+        return;
+      }
+      if (file.size > 1835008) {
+        alert(`File too large for OTA partition! Selected ${(file.size / 1024).toFixed(0)} KB, max allowed is 1792 KB.`);
+        return;
+      }
+      selectedOtaFile = file;
+      otaDropzone.classList.add('has-file');
+      otaDropzoneText.textContent = `Selected: ${file.name}`;
+      otaDropzoneSub.textContent = `Binary Size: ${(file.size / 1024).toFixed(1)} KB (${file.size.toLocaleString()} bytes)`;
+      log(`[OTA FILE] Loaded firmware '${file.name}' (${(file.size / 1024).toFixed(1)} KB).`, '#c084fc');
+      checkReadyToUpload();
+    }
+
+    otaFlashBtn.addEventListener('click', async () => {
+      if (!selectedOtaFile) return;
+      await flashFirmwareViaBLE(selectedOtaFile);
+    });
+
+    async function flashFirmwareViaBLE(file) {
+      if (!bleServer || !bleServer.connected || !bleCtrlChar || !bleDataChar) {
+        alert('Please connect to the E-Reader over BLE first!');
+        return;
+      }
+
+      if (!confirm(`Flash firmware "${file.name}" (${(file.size / 1024).toFixed(1)} KB) to your ESP32-S3 over BLE? The e-reader will reboot automatically upon completion.`)) {
+        return;
+      }
+
+      isFlashingOta = true;
+      checkReadyToUpload();
+      otaProgressContainer.style.display = 'block';
+      otaProgressInfo.style.display = 'flex';
+      otaProgressBar.style.width = '0%';
+      otaProgressPct.textContent = '0%';
+      otaProgressStatus.textContent = 'Initializing OTA on E-Reader...';
+
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const fileBytes = new Uint8Array(arrayBuffer);
+        const fileSize = fileBytes.length;
+
+        log(`[BLE OTA] Sending OTA init packet for '${file.name}' (${fileSize.toLocaleString()} bytes)...`, '#c084fc');
+
+        // Prepare promise to wait for E-Reader's STATUS_READY (0x01)
+        const readyPromise = new Promise((resolve, reject) => {
+          bleReadyResolver = resolve;
+          setTimeout(() => reject(new Error('Timeout waiting for E-Reader OTA READY handshake')), 6000);
+        });
+
+        // Prepare CMD_START_OTA packet:
+        // Byte 0: 0x10 (CMD_START_OTA)
+        // Bytes 1..4: uint32_t fileSize (little-endian)
+        const startPacket = new Uint8Array(5);
+        startPacket[0] = 0x10;
+        const view = new DataView(startPacket.buffer);
+        view.setUint32(1, fileSize, true);
+
+        await bleCtrlChar.writeValue(startPacket);
+        await readyPromise;
+
+        log('[BLE OTA] E-Reader initialized OTA partition. Streaming firmware chunks...', '#10b981');
+
+        const chunkSize = 256;
+        let offset = 0;
+        const startTime = Date.now();
+
+        const finishPromise = new Promise((resolve) => {
+          bleFinishResolver = resolve;
+        });
+
+        while (offset < fileSize) {
+          const chunk = fileBytes.slice(offset, offset + chunkSize);
+          if (bleDataChar.writeValueWithResponse) {
+            await bleDataChar.writeValueWithResponse(chunk);
+          } else {
+            await bleDataChar.writeValue(chunk);
+          }
+          offset += chunk.length;
+
+          const pct = Math.floor((offset / fileSize) * 100);
+          otaProgressBar.style.width = pct + '%';
+          otaProgressPct.textContent = pct + '%';
+          const elapsed = (Date.now() - startTime) / 1000;
+          const rate = elapsed > 0 ? ((offset / 1024) / elapsed).toFixed(1) : '0';
+          otaProgressStatus.textContent = `Flashing ${(offset / 1024).toFixed(0)} / ${(fileSize / 1024).toFixed(0)} KB (${rate} KB/s)`;
+        }
+
+        log('[BLE OTA] Streamed 100% of firmware. Finalizing & verifying checksum...', '#c084fc');
+        otaProgressStatus.textContent = 'Verifying checksum & committing partition...';
+        const finishPacket = new Uint8Array([0x11]); // CMD_FINISH_OTA
+        await bleCtrlChar.writeValue(finishPacket);
+
+        const result = await finishPromise;
+        if (result && result.success) {
+          const totalSec = ((Date.now() - startTime) / 1000).toFixed(1);
+          log(`[BLE OTA SUCCESS] Firmware updated in ${totalSec}s! E-Reader is rebooting into the new build...`, '#10b981');
+          otaProgressStatus.textContent = 'OTA Flash Complete! E-Reader is rebooting...';
+          otaProgressBar.style.width = '100%';
+          otaProgressPct.textContent = '100%';
+        } else {
+          throw new Error(result ? result.reason : 'E-Reader rejected OTA update');
+        }
+
+      } catch (err) {
+        log('[BLE OTA ERR] OTA update failed: ' + err.message, '#ef4444');
+        otaProgressStatus.textContent = 'OTA Failed: ' + err.message;
+      } finally {
+        isFlashingOta = false;
+        bleReadyResolver = null;
+        bleFinishResolver = null;
+        checkReadyToUpload();
+      }
+    }
+  </script>
+</body>
+</html>
