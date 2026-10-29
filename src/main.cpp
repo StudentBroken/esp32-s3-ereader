@@ -418,7 +418,8 @@ enum UiState {
     UI_STATE_POWER_CONFIRM,
     UI_STATE_BLE_SYNC,
     UI_STATE_BOOK_ACTIONS,
-    UI_STATE_TOC
+    UI_STATE_TOC,
+    UI_STATE_STATUS
 };
 
 // Menu Item Identifiers
@@ -431,6 +432,7 @@ enum MenuItem {
     MENU_PHOTO_MODE,
     MENU_SCREENSAVER_TOGGLE,
     MENU_SCREENSAVER_NOW,
+    MENU_STATUS,
     MENU_CLEAN_REFRESH,
     MENU_SLEEP,
     MENU_COUNT
@@ -1076,6 +1078,7 @@ void render_menu_screen(uint8_t bat_pct) {
         menu_labels[MENU_PHOTO_MODE] = photo_buf;
         menu_labels[MENU_SCREENSAVER_TOGGLE] = ss_buf;
         menu_labels[MENU_SCREENSAVER_NOW]    = "Screensaver Now (Sleep)";
+        menu_labels[MENU_STATUS]        = "Status / Diagnostics";
         menu_labels[MENU_CLEAN_REFRESH] = "Full Anti-Ghost Refresh";
         menu_labels[MENU_SLEEP]         = "Power Off / Sleep...";
 
@@ -2033,6 +2036,149 @@ void enter_stage2_deep_sleep(uint32_t bat_mv, uint8_t bat_pct, bool render_zzz =
 }
 
 /** Small centred notice, then caller redraws whatever it wants. */
+// -----------------------------------------------------------------------------
+// Status screen + live sync progress
+// -----------------------------------------------------------------------------
+#define STATUS_MAX_LINES 20
+static int build_status_lines(char lines[][64], int max) {
+    int n = 0;
+    uint32_t mv = read_battery_millivolts();
+    uint8_t pct = calculate_battery_percentage(mv);
+    snprintf(lines[n++], 64, "Battery  %u mV  %u%%%s", (unsigned)mv, pct, pct <= SS_BATTERY_MIN_PCT ? "  (LOW)" : "");
+    snprintf(lines[n++], 64, "Photo frame %s | Screensaver %s",
+             ScreensaverConfig::photo_mode() ? "ON" : "OFF", ScreensaverConfig::enabled() ? "ON" : "OFF");
+    String url = ScreensaverConfig::url();
+    if (url.length() == 0) snprintf(lines[n++], 64, "URL      (not set)");
+    else snprintf(lines[n++], 64, "URL  ..%s (%d ch)", url.substring(url.length() > 26 ? url.length() - 26 : 0).c_str(), (int)url.length());
+    for (int i = 0; i < SS_MAX_WIFI && n < max; i++) {
+        String ssid, pass;
+        if (ScreensaverConfig::get_wifi(i, ssid, pass)) snprintf(lines[n++], 64, "WiFi %d   %s", i + 1, ssid.c_str());
+    }
+    if (!ScreensaverConfig::has_wifi() && n < max) snprintf(lines[n++], 64, "WiFi     (none saved)");
+    std::vector<uint32_t> ids = ss_cached_ids();
+    snprintf(lines[n++], 64, "Images   %u cached | flash free %u KB", (unsigned)ids.size(),
+             (unsigned)((LittleFS.totalBytes() - LittleFS.usedBytes()) / 1024));
+    snprintf(lines[n++], 64, "12h clk  tick %u | shown %u | pend %u try %u",
+             (unsigned)ScreensaverConfig::tick(), (unsigned)ScreensaverConfig::shown(),
+             (unsigned)ScreensaverConfig::pending(), (unsigned)ScreensaverConfig::tries());
+    snprintf(lines[n++], 64, "Photo    tick %u | pend %u try %u",
+             (unsigned)ScreensaverConfig::photo_tick(), (unsigned)ScreensaverConfig::photo_pending(),
+             (unsigned)ScreensaverConfig::photo_tries());
+    if (ScreensaverConfig::photo_mode()) {
+        uint32_t t = ScreensaverConfig::photo_tick();
+        uint32_t left = SS_PHOTO_SYNC_TICKS - (t % SS_PHOTO_SYNC_TICKS);
+        snprintf(lines[n++], 64, "Next     image 10 min | sync in %u wakes", (unsigned)left);
+    } else if (ScreensaverConfig::ready()) {
+        snprintf(lines[n++], 64, "Next     12 h clock wake after sleep");
+    } else {
+        snprintf(lines[n++], 64, "Next     no timer (screensaver not ready)");
+    }
+    snprintf(lines[n++], 64, "Book     %s", current_book_path);
+    snprintf(lines[n++], 64, "Auto-sleep %llu min | Boot #%d", awake_timeout_ms() / 60000ULL, boot_count);
+    snprintf(lines[n++], 64, "Heap     %u KB free | up %lu s", (unsigned)(ESP.getFreeHeap() / 1024), millis() / 1000UL);
+    return n;
+}
+
+static void dump_status_serial() {
+    static char lines[STATUS_MAX_LINES][64];
+    int n = build_status_lines(lines, STATUS_MAX_LINES);
+    Serial.println("\n===== STATUS =====");
+    for (int i = 0; i < n; i++) Serial.println(lines[i]);
+    Serial.println("==================");
+}
+
+static void render_status_screen(uint8_t bat_pct) {
+    static char lines[STATUS_MAX_LINES][64];
+    int n = build_status_lines(lines, STATUS_MAX_LINES);
+    display.setRotation(current_rotation);
+    int w = display.width(), h = display.height();
+    display.setPartialWindow(0, 0, w, h);
+    display.firstPage();
+    do {
+        display.fillScreen(GxEPD_WHITE);
+        display.drawRect(2, 2, w - 4, h - 4, GxEPD_BLACK);
+        display.fillRect(4, 4, w - 8, 26, GxEPD_BLACK);
+        display.setFont(NULL);
+        display.setTextColor(GxEPD_WHITE);
+        display.setCursor(14, 13);
+        display.print("STATUS / DIAGNOSTICS");
+        draw_battery_indicator(w - 36, 11, bat_pct, true);
+        display.setTextColor(GxEPD_BLACK);
+        int maxc = (w - 20) / 6;
+        int y = 40;
+        for (int i = 0; i < n && y < h - 30; i++, y += 13) {
+            char row[64];
+            snprintf(row, sizeof(row), "%.*s", maxc, lines[i]);
+            display.setCursor(10, y);
+            display.print(row);
+        }
+        display.fillRect(4, h - 26, w - 8, 22, GxEPD_BLACK);
+        display.setTextColor(GxEPD_WHITE);
+        display.setCursor(12, h - 18);
+        display.print("Press any button to go back");
+    } while (display.nextPage());
+}
+
+#define PROG_LINES 11
+static char prog_lines[PROG_LINES][40];
+static int prog_count = 0;
+static const char* prog_title = "";
+
+static void render_progress_screen() {
+    display.setRotation(current_rotation);
+    int w = display.width(), h = display.height();
+    uint32_t mv = read_battery_millivolts();
+    display.setPartialWindow(0, 0, w, h);
+    display.firstPage();
+    do {
+        display.fillScreen(GxEPD_WHITE);
+        display.drawRect(2, 2, w - 4, h - 4, GxEPD_BLACK);
+        display.fillRect(4, 4, w - 8, 26, GxEPD_BLACK);
+        display.setFont(NULL);
+        display.setTextColor(GxEPD_WHITE);
+        display.setCursor(14, 13);
+        display.print(prog_title);
+        draw_battery_indicator(w - 36, 11, calculate_battery_percentage(mv), true);
+        display.setTextColor(GxEPD_BLACK);
+        int maxc = (w - 20) / 6;
+        for (int i = 0; i < prog_count; i++) {
+            char row[40];
+            snprintf(row, sizeof(row), "%.*s", maxc, prog_lines[i]);
+            display.setCursor(10, 42 + i * 14);
+            display.print(row);
+        }
+    } while (display.nextPage());
+}
+
+static void progress_push(const char* msg) {
+    const char* m = msg;
+    if (strncmp(m, "[SS] ", 5) == 0) m += 5;
+    if (prog_count == PROG_LINES) {
+        memmove(prog_lines[0], prog_lines[1], sizeof(prog_lines[0]) * (PROG_LINES - 1));
+        prog_count--;
+    }
+    snprintf(prog_lines[prog_count], sizeof(prog_lines[0]), "%s", m);
+    char* nl = strchr(prog_lines[prog_count], '\n');
+    if (nl) *nl = 0;
+    prog_count++;
+}
+
+static void progress_hook(const char* msg) {
+    progress_push(msg);
+    render_progress_screen();
+}
+
+static void progress_begin(const char* title) {
+    prog_title = title;
+    prog_count = 0;
+    ss_log_hook = progress_hook;
+    progress_push("Starting...");
+    render_progress_screen();
+}
+
+static void progress_end() { ss_log_hook = nullptr; }
+
+
 static void show_notice(const char* line1, const char* line2) {
     display.setRotation(current_rotation);
     int w = display.width();
@@ -2070,9 +2216,10 @@ void run_manual_screensaver() {
             render_menu_screen(pct);
             return;
         }
-        show_notice("Fetching images...", "Up to 3 min, please wait");
+        progress_begin("FETCHING IMAGES (up to 3 min)");
         bool ok = ss_wifi_connect() && ss_sync();
         ss_wifi_off();
+        progress_end();
         ScreensaverConfig::set_sync_state(!ok, ok ? 0 : 1);
     }
     if (ss_cached_ids().empty()) {
@@ -2488,6 +2635,46 @@ void loop() {
             uint32_t mv = read_battery_millivolts();
             render_current_reading_page(mv, calculate_battery_percentage(mv), /*fast_bw=*/false);
         }
+        else if (c == 'i') {
+            dump_status_serial();
+        }
+        else if (c == 'y') {
+            Serial.println("\n[CMD] >>> Serial sync test (no sleep) <<<");
+            progress_begin("SYNC TEST");
+            bool ok = ss_wifi_connect() && ss_sync();
+            ss_wifi_off();
+            progress_end();
+            Serial.printf("[CMD] sync %s, %u images cached\n", ok ? "OK" : "FAILED", (unsigned)ss_cached_ids().size());
+            ScreensaverConfig::set_sync_state(!ok, 0);
+            dump_status_serial();
+        }
+        else if (c == 'g') {
+            Serial.println("\n[CMD] >>> Serial screensaver now <<<");
+            run_manual_screensaver();
+        }
+        else if (c == 'v') {
+            render_status_screen(calculate_battery_percentage(read_battery_millivolts()));
+            current_ui_state = UI_STATE_STATUS;
+        }
+        else if (c == '!') {
+            String line = Serial.readStringUntil('\n');
+            line.trim();
+            if (line.startsWith("wifi ")) {
+                int bar = line.indexOf('|');
+                String ssid = line.substring(5, bar < 0 ? line.length() : bar);
+                String pass = bar < 0 ? "" : line.substring(bar + 1);
+                ScreensaverConfig::set_wifi(0, ssid, pass);
+                Serial.printf("[CMD] WiFi slot 1 set to '%s'\n", ssid.c_str());
+            } else if (line.startsWith("url ")) {
+                ScreensaverConfig::set_url(line.substring(4));
+                Serial.println("[CMD] URL set");
+            } else if (line == "on" || line == "off") {
+                ScreensaverConfig::set_enabled(line == "on");
+                Serial.printf("[CMD] screensaver %s\n", line.c_str());
+            } else {
+                Serial.println("[CMD] unknown ! command (wifi ssid|pass, url <u>, on, off)");
+            }
+        }
         else if (c == 'S' || c == 'k') {
             Serial.println("\n[CMD] >>> Serial Dump Persistent Config <<<");
             ConfigManager::dump_state();
@@ -2748,6 +2935,10 @@ void loop() {
                             case MENU_SCREENSAVER_NOW:
                                 run_manual_screensaver();
                                 break;
+                            case MENU_STATUS:
+                                current_ui_state = UI_STATE_STATUS;
+                                render_status_screen(pct);
+                                break;
                             case MENU_CLEAN_REFRESH:
                                 current_ui_state = UI_STATE_READING;
                                 render_current_reading_page(mv, pct, /*fast_bw=*/false);
@@ -2808,6 +2999,12 @@ void loop() {
                             open_book_actions(selected_library_idx);
                         }
                     }
+                    break;
+                }
+
+                case UI_STATE_STATUS: {
+                    current_ui_state = UI_STATE_MENU;
+                    render_menu_screen(calculate_battery_percentage(read_battery_millivolts()));
                     break;
                 }
 

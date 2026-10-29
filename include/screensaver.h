@@ -1,4 +1,5 @@
 #pragma once
+#include <stdarg.h>
 
 /**
  * Colour screensaver: fetches pre-converted tri-colour (white/black/red) portrait images from a
@@ -64,7 +65,7 @@
 #define SS_PHOTO_SYNC_TICKS  18
 
 // Red plane polarity on the controller: 0 = red (same convention as the black plane, 0 = black).
-#define SS_RED_ACTIVE_LOW 1
+#define SS_RED_ACTIVE_LOW 0
 
 #pragma pack(push, 1)
 struct SsiHeader {
@@ -88,6 +89,17 @@ static_assert(sizeof(SsiHeader) == SS_HEADER_BYTES, "SSI header must be 32 bytes
 // -----------------------------------------------------------------------------
 // CRC32 (IEEE 802.3, same as zlib / the web converter)
 // -----------------------------------------------------------------------------
+// Log line to Serial and, when set, to an on-screen progress hook (see main.cpp)
+static void (*ss_log_hook)(const char*) = nullptr;
+static inline void ss_log(const char* fmt, ...) {
+    char buf[160];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    Serial.print(buf);
+    if (ss_log_hook) ss_log_hook(buf);
+}
+
 static inline uint32_t ss_crc32(const uint8_t* data, size_t len, uint32_t crc = 0) {
     crc = ~crc;
     for (size_t i = 0; i < len; i++) {
@@ -236,7 +248,7 @@ static inline bool ss_wifi_connect(uint32_t timeout_ms = 20000) {
     delay(50);
 
     int found = WiFi.scanNetworks(false, false);
-    Serial.printf("[SS] WiFi scan: %d networks\n", found);
+    ss_log("[SS] WiFi scan: %d networks\n", found);
     if (found <= 0) { WiFi.scanDelete(); WiFi.mode(WIFI_OFF); return false; }
 
     int best_slot = -1, best_rssi = -1000;
@@ -255,22 +267,22 @@ static inline bool ss_wifi_connect(uint32_t timeout_ms = 20000) {
     }
     WiFi.scanDelete();
     if (best_slot < 0) {
-        Serial.println("[SS] No saved network in range.");
+        ss_log("[SS] No saved network in range.\n");
         WiFi.mode(WIFI_OFF);
         return false;
     }
 
-    Serial.printf("[SS] Joining '%s' (%d dBm)...\n", best_ssid.c_str(), best_rssi);
+    ss_log("[SS] Joining '%s' (%d dBm)...\n", best_ssid.c_str(), best_rssi);
     WiFi.begin(best_ssid.c_str(), best_pass.c_str());
     uint32_t t0 = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - t0 < timeout_ms) delay(100);
     if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[SS] WiFi connect timed out.");
+        ss_log("[SS] WiFi connect timed out.\n");
         WiFi.disconnect(true, false);
         WiFi.mode(WIFI_OFF);
         return false;
     }
-    Serial.printf("[SS] Connected, IP %s\n", WiFi.localIP().toString().c_str());
+    ss_log("[SS] Connected, IP %s\n", WiFi.localIP().toString().c_str());
     return true;
 }
 
@@ -292,7 +304,7 @@ static inline bool ss_http_get(const String& url, String& body) {
     int code = http.GET();
     bool ok = (code == 200);
     if (ok) body = http.getString();
-    else Serial.printf("[SS] HTTP %d\n", code);
+    else ss_log("[SS] HTTP %d\n", code);
     http.end();
     return ok;
 }
@@ -349,7 +361,7 @@ static inline void ss_ingest(const String& body, uint32_t id, SsAssembly& a) {
                     }
                     a.got[idx] = true;
                 } else {
-                    Serial.printf("[SS] chunk %lu/%lu rejected (bad length/CRC)\n", rid, idx);
+                    ss_log("[SS] chunk %lu/%lu rejected (bad length/CRC)\n", rid, idx);
                 }
             }
         }
@@ -374,7 +386,7 @@ static inline bool ss_try_parity_repair(SsAssembly& a) {
         for (int b = 0; b < SS_CHUNK_BYTES; b++) dst[b] ^= src[b];
     }
     a.got[missing] = true;
-    Serial.printf("[SS] chunk %d rebuilt from parity\n", missing);
+    ss_log("[SS] chunk %d rebuilt from parity\n", missing);
     return true;
 }
 
@@ -409,9 +421,9 @@ static inline bool ss_fetch_image(const String& base_url, uint32_t id) {
 
         SsiHeader h;
         memcpy(&h, a.hdr, sizeof(h));
-        if (!ss_header_valid(h) || h.image_id != id) { Serial.println("[SS] header invalid"); a.have_hdr = false; a.got[SS_IDX_HEADER] = a.got[SS_IDX_HEADER2] = false; continue; }
+        if (!ss_header_valid(h) || h.image_id != id) { ss_log("[SS] header invalid\n"); a.have_hdr = false; a.got[SS_IDX_HEADER] = a.got[SS_IDX_HEADER2] = false; continue; }
         if (ss_crc32(a.payload, SS_PAYLOAD_BYTES) != h.payload_crc) {
-            Serial.println("[SS] payload CRC mismatch, refetching everything");
+            ss_log("[SS] payload CRC mismatch, refetching everything\n");
             memset(a.got, 0, sizeof(a.got));
             a.have_hdr = false;
             continue;
@@ -429,7 +441,7 @@ static inline bool ss_fetch_image(const String& base_url, uint32_t id) {
     }
     free(a.payload);
     free(a.parity);
-    Serial.printf("[SS] image %lu %s\n", (unsigned long)id, ok ? "stored" : "FAILED");
+    ss_log("[SS] image %lu %s\n", (unsigned long)id, ok ? "stored" : "FAILED");
     return ok;
 }
 
@@ -450,7 +462,7 @@ static inline bool ss_sync(uint32_t budget_ms = SS_SYNC_BUDGET_MS) {
     if (have.length()) list_query += "&have=" + have;
     if (!ss_http_get(ss_build_url(base, list_query), body)) return false;
     int l = body.indexOf("\nL ");
-    if (body.indexOf("SS1") < 0 || l < 0) { Serial.println("[SS] bad list response"); return false; }
+    if (body.indexOf("SS1") < 0 || l < 0) { ss_log("[SS] bad list response\n"); return false; }
     int e = body.indexOf('\n', l + 3);
     String csv = body.substring(l + 3, e < 0 ? body.length() : e);
     csv.trim();
@@ -465,7 +477,7 @@ static inline bool ss_sync(uint32_t budget_ms = SS_SYNC_BUDGET_MS) {
         start = comma + 1;
     }
     if (ids.empty()) return false;
-    Serial.printf("[SS] Server picked %u images\n", (unsigned)ids.size());
+    ss_log("[SS] Server picked %u images\n", (unsigned)ids.size());
 
     // Make room first: old images that are not part of the new set are dropped up front if space is tight.
     size_t needed = ids.size() * SS_FILE_BYTES + 64 * 1024;
@@ -478,7 +490,7 @@ static inline bool ss_sync(uint32_t budget_ms = SS_SYNC_BUDGET_MS) {
 
     std::vector<uint32_t> stored;
     for (uint32_t id : ids) {
-        if (millis() - t0 > budget_ms) { Serial.println("[SS] sync budget exhausted"); break; }
+        if (millis() - t0 > budget_ms) { ss_log("[SS] sync budget exhausted\n"); break; }
         char path[32]; ss_image_path(id, path, sizeof(path));
         bool have = false;
         if (LittleFS.exists(path)) {            // image already cached and previously verified
@@ -539,10 +551,10 @@ static inline bool ss_show_image(GxEPD2_420_Z96& epd, uint32_t id) {
                 else red[idx] |= mask;
             }
         }
-        Serial.printf("[SS] Showing image %lu (full tri-colour refresh)...\n", (unsigned long)id);
+        ss_log("[SS] Showing image %lu (full tri-colour refresh)...\n", (unsigned long)id);
         epd.drawTriColor(bw, red);
     } else {
-        Serial.printf("[SS] image %lu unreadable/corrupt, removing\n", (unsigned long)id);
+        ss_log("[SS] image %lu unreadable/corrupt, removing\n", (unsigned long)id);
         LittleFS.remove(path);
     }
     free(payload); free(bw); free(red);
