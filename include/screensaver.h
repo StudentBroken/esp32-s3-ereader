@@ -59,6 +59,10 @@
 #define SS_SYNC_BUDGET_MS (3UL * 60UL * 1000UL)
 #define SS_WAKE_INTERVAL_US (12ULL * 3600ULL * 1000000ULL)
 
+// Photo frame mode: wake every 10 min to show the next image, sync every 3 h (18 wakes)
+#define SS_PHOTO_INTERVAL_US (10ULL * 60ULL * 1000000ULL)
+#define SS_PHOTO_SYNC_TICKS  18
+
 // Red plane polarity on the controller: 0 = red (same convention as the black plane, 0 = black).
 #define SS_RED_ACTIVE_LOW 1
 
@@ -153,6 +157,27 @@ public:
     }
     /** Sync possible at all: toggle on, URL and at least one network stored. */
     static bool ready() { return enabled() && url().length() > 8 && has_wifi(); }
+
+    // Photo frame mode (continuous slideshow): flag, 10 min wake counter, sync retry state
+    static bool photo_mode() { Preferences p; p.begin("ss", true); bool v = p.getUChar("photo", 0); p.end(); return v; }
+    static void set_photo_mode(bool on) {
+        Preferences p; p.begin("ss", false);
+        p.putUChar("photo", on ? 1 : 0);
+        p.putUInt("ptick", 0);
+        p.putUChar("ppend", 0);
+        p.putUChar("ptries", 0);
+        p.end();
+    }
+    static uint32_t photo_tick() { Preferences p; p.begin("ss", true); uint32_t v = p.getUInt("ptick", 0); p.end(); return v; }
+    static void set_photo_tick(uint32_t v) { Preferences p; p.begin("ss", false); p.putUInt("ptick", v); p.end(); }
+    static bool photo_pending() { Preferences p; p.begin("ss", true); bool v = p.getUChar("ppend", 0); p.end(); return v; }
+    static uint8_t photo_tries() { Preferences p; p.begin("ss", true); uint8_t v = p.getUChar("ptries", 0); p.end(); return v; }
+    static void set_photo_sync_state(bool pend, uint8_t tries) {
+        Preferences p; p.begin("ss", false);
+        p.putUChar("ppend", pend ? 1 : 0);
+        p.putUChar("ptries", tries);
+        p.end();
+    }
 
     // 12 h wake counter, sync retry state and rotation index
     static uint32_t tick() { Preferences p; p.begin("ss", true); uint32_t v = p.getUInt("tick", 0); p.end(); return v; }

@@ -428,6 +428,7 @@ enum MenuItem {
     MENU_BLE_SYNC,
     MENU_ORIENTATION,
     MENU_JUMP,
+    MENU_PHOTO_MODE,
     MENU_SCREENSAVER_TOGGLE,
     MENU_SCREENSAVER_NOW,
     MENU_CLEAN_REFRESH,
@@ -1070,6 +1071,9 @@ void render_menu_screen(uint8_t bat_pct) {
                                             ? "Jump to Chapter" : "Jump Page Scrubber";
         char ss_buf[36];
         snprintf(ss_buf, sizeof(ss_buf), "Colour Screensaver: %s", ScreensaverConfig::enabled() ? "ON" : "OFF");
+        char photo_buf[36];
+        snprintf(photo_buf, sizeof(photo_buf), "Photo Frame Mode: %s", ScreensaverConfig::photo_mode() ? "ON" : "OFF");
+        menu_labels[MENU_PHOTO_MODE] = photo_buf;
         menu_labels[MENU_SCREENSAVER_TOGGLE] = ss_buf;
         menu_labels[MENU_SCREENSAVER_NOW]    = "Screensaver Now (Sleep)";
         menu_labels[MENU_CLEAN_REFRESH] = "Full Anti-Ghost Refresh";
@@ -1812,7 +1816,18 @@ static void prepare_epd() {
     touch_pad_sleep_channel_read_benchmark(TOUCH_PAD_MENU, &benchmark);
     Serial.printf("[PWR] Benchmark captured: %u | Trigger threshold: >= %u\n", benchmark, benchmark + 400);
 
-    if (ScreensaverConfig::ready()) {
+    if (ScreensaverConfig::photo_mode()) {
+        uint32_t mv = read_battery_millivolts();
+        uint8_t pct = calculate_battery_percentage(mv);
+        if (mv > 2500 && pct <= SS_BATTERY_MIN_PCT) {
+            // Battery under 25%: photo frame stops, only D9 wakes the device
+            esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+            Serial.printf("[PHOTO] Battery %u%% <= 25%% -> photo frame stopped, sleeping until touched.\n", pct);
+        } else {
+            esp_sleep_enable_timer_wakeup(SS_PHOTO_INTERVAL_US);
+            Serial.println("[PHOTO] 10 min photo timer armed.");
+        }
+    } else if (ScreensaverConfig::ready()) {
         esp_sleep_enable_timer_wakeup(SS_WAKE_INTERVAL_US);
         Serial.println("[PWR] 12 h screensaver clock armed.");
     } else {
@@ -1860,6 +1875,37 @@ void render_low_battery_screen(uint32_t bat_mv, uint8_t bat_pct) {
         display.setCursor((w - 150) / 2, h - 24);
         display.print("Screensaver paused <25%");
     } while (display.nextPage());
+}
+
+/**
+ * Photo frame wake (every 10 min). Never returns: shows the next cached image and sleeps again.
+ * Every SS_PHOTO_SYNC_TICKS wakes (3 h) fetches new random images first; failed syncs retry on the
+ * next wake, 4 attempts max. Stops (no timer) at or below 25% battery.
+ */
+[[noreturn]] static void handle_photo_wake(uint32_t bat_mv, uint8_t bat_pct) {
+    if (bat_mv > 2500 && bat_pct <= SS_BATTERY_MIN_PCT) {
+        Serial.printf("[PHOTO] Battery %u%% <= 25%% -> stopping photo frame.\n", bat_pct);
+        arm_and_deep_sleep();   // arms without the timer at low battery
+    }
+    uint32_t tick = ScreensaverConfig::photo_tick() + 1;
+    ScreensaverConfig::set_photo_tick(tick);
+    Serial.printf("[PHOTO] wake #%u (battery %u%%)\n", (unsigned)tick, bat_pct);
+
+    if (ScreensaverConfig::ready()) {
+        if (!ScreensaverConfig::photo_pending() && (tick % SS_PHOTO_SYNC_TICKS) == 0) {
+            ScreensaverConfig::set_photo_sync_state(true, 0);
+        }
+        if (ScreensaverConfig::photo_pending()) {
+            bool ok = ss_wifi_connect() && ss_sync();
+            ss_wifi_off();
+            uint8_t tries = ScreensaverConfig::photo_tries() + 1;
+            if (ok || tries >= SS_MAX_SYNC_ATTEMPTS) ScreensaverConfig::set_photo_sync_state(false, 0);
+            else ScreensaverConfig::set_photo_sync_state(true, tries);
+        }
+    }
+    prepare_epd();
+    ss_show_next(display.epd2);
+    arm_and_deep_sleep();
 }
 
 /**
@@ -1946,6 +1992,20 @@ void enter_stage2_deep_sleep(uint32_t bat_mv, uint8_t bat_pct, bool render_zzz =
         touchTaskHandle = NULL;
     }
     delay(50);
+
+    bool have_images_pre = !ss_cached_ids().empty();
+    if (allow_screensaver && ScreensaverConfig::photo_mode() && bat_mv > 2500 && bat_pct > SS_BATTERY_MIN_PCT &&
+        (have_images_pre || ScreensaverConfig::ready())) {
+        // Photo frame mode: no Zzz screen, go straight to the slideshow
+        if (!have_images_pre) {
+            bool ok = ss_wifi_connect() && ss_sync();
+            ss_wifi_off();
+            ScreensaverConfig::set_photo_sync_state(!ok, ok ? 0 : 1);
+        }
+        epdSPI.begin(EPD_SCLK_PIN, -1, EPD_MOSI_PIN, -1);
+        if (ss_show_next(display.epd2)) arm_and_deep_sleep();
+        Serial.println("[PHOTO] No image shown, falling back to Zzz screen.");
+    }
 
     if (render_zzz) render_stage2_zzz_screen(bat_mv, bat_pct);
 
@@ -2080,6 +2140,7 @@ void setup() {
     esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
     if (current_stage == STAGE_DEEP_ZZZ) {
         if (wakeup_cause == ESP_SLEEP_WAKEUP_TIMER) {
+            if (ScreensaverConfig::photo_mode()) handle_photo_wake(bat_mv, bat_pct);   // never returns
             handle_timer_wake(bat_mv, bat_pct);   // never returns
         }
         if (wakeup_cause == ESP_SLEEP_WAKEUP_TOUCHPAD && rtc_spurious_wakes < 3) {
@@ -2664,6 +2725,20 @@ void loop() {
                                 jump_target_frame = (StorageManager::get_book_version(current_book_path) == EBK_FORMAT_V2_TEXT)
                                                         ? (int)current_chapter_idx : current_frame;
                                 render_jump_screen(jump_target_frame, total_frames);
+                                break;
+                            case MENU_PHOTO_MODE:
+                                if (ScreensaverConfig::photo_mode()) {
+                                    ScreensaverConfig::set_photo_mode(false);
+                                    Serial.println("[SETTINGS] Photo frame mode OFF");
+                                    render_menu_screen(pct);
+                                } else {
+                                    ScreensaverConfig::set_photo_mode(true);
+                                    Serial.println("[SETTINGS] Photo frame mode ON -> starting slideshow");
+                                    run_manual_screensaver();   // shows first image, sleeps with the 10 min timer
+                                    // returns only if it could not start (low battery / no images)
+                                    ScreensaverConfig::set_photo_mode(false);
+                                    render_menu_screen(pct);
+                                }
                                 break;
                             case MENU_SCREENSAVER_TOGGLE:
                                 ScreensaverConfig::set_enabled(!ScreensaverConfig::enabled());
