@@ -1040,7 +1040,11 @@
         const tdProg = document.createElement('td');
         tdProg.style.fontFamily = 'var(--mono-font)';
         tdProg.style.fontSize = '0.82rem';
-        if (b.tot > 0) {
+        if (b.fmt === 2 && b.chs > 0) {
+          // v2 text book: chapter N of M and percent through the current chapter
+          tdProg.textContent = `Ch. ${b.ch} / ${b.chs} · ${b.pct}%`;
+          if (b.ctitle) tdProg.title = b.ctitle;
+        } else if (b.tot > 0) {
           const progPct = Math.round((Math.max(1, b.cur) / b.tot) * 100);
           tdProg.textContent = `Page ${b.cur || 1} / ${b.tot} (${progPct}%)`;
         } else {

@@ -4,6 +4,7 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include <memory>
+#include <Preferences.h>
 #include "ebk_format.h"
 
 #define MAX_STORED_BOOKS 15
@@ -307,7 +308,108 @@ public:
             }
             file = root.openNextFile();
         }
+        apply_book_order(out_books, count);
         return count;
+    }
+
+    // ---------------------------------------------------------------------
+    // User-defined book order (persisted in NVS as '|'-separated filenames).
+    // Books missing from the list (fresh uploads) are appended in scan order.
+    // ---------------------------------------------------------------------
+    static String load_book_order() {
+        Preferences p;
+        p.begin("bkorder", true);
+        String o = p.getString("order", "");
+        p.end();
+        return o;
+    }
+
+    static void save_book_order(const StoredBookInfo* books, int count) {
+        String o;
+        for (int i = 0; i < count; i++) {
+            if (i) o += '|';
+            o += books[i].filename;
+        }
+        Preferences p;
+        p.begin("bkorder", false);
+        p.putString("order", o);
+        p.end();
+    }
+
+    static void apply_book_order(StoredBookInfo* books, int count) {
+        if (count < 2) return;
+        String order = load_book_order();
+        if (order.length() == 0) return;
+
+        // rank = position in saved list; unknown books get a rank after all known ones
+        auto rank_of = [&](const char* name) -> int {
+            int idx = 0, start = 0;
+            while (start <= (int)order.length()) {
+                int end = order.indexOf('|', start);
+                if (end < 0) end = order.length();
+                if (order.substring(start, end).equals(name)) return idx;
+                idx++;
+                start = end + 1;
+            }
+            return 1000;
+        };
+        int ranks[MAX_STORED_BOOKS];
+        for (int i = 0; i < count; i++) ranks[i] = rank_of(books[i].filename);
+        // stable insertion sort (count <= 15)
+        for (int i = 1; i < count; i++) {
+            StoredBookInfo tmp = books[i];
+            int tr = ranks[i];
+            int j = i - 1;
+            while (j >= 0 && ranks[j] > tr) {
+                books[j + 1] = books[j];
+                ranks[j + 1] = ranks[j];
+                j--;
+            }
+            books[j + 1] = tmp;
+            ranks[j + 1] = tr;
+        }
+    }
+
+    /** Swap book `idx` with its neighbour (dir = -1 up, +1 down) and persist. Returns new index. */
+    static int move_book(int idx, int dir) {
+        std::unique_ptr<StoredBookInfo[]> books(new (std::nothrow) StoredBookInfo[MAX_STORED_BOOKS]);
+        if (!books) return idx;
+        int count = get_stored_books(books.get(), MAX_STORED_BOOKS);
+        int to = idx + dir;
+        if (idx < 0 || idx >= count || to < 0 || to >= count) return idx;
+        StoredBookInfo tmp = books[idx];
+        books[idx] = books[to];
+        books[to] = tmp;
+        save_book_order(books.get(), count);
+        return to;
+    }
+
+    /** Overall percent read (0-100) of a v2 book, by text bytes before the current offset. */
+    static int v2_book_percent(const char* path, uint16_t chap_idx, uint32_t offset) {
+        Ebk2Header h;
+        if (!get_v2_header(path, &h) || h.total_chapters == 0) return 0;
+        Ebk2ChapterEntry first, last, cur;
+        if (!read_v2_chapter_entry(path, 0, &first)) return 0;
+        if (!read_v2_chapter_entry(path, h.total_chapters - 1, &last)) return 0;
+        if (!read_v2_chapter_entry(path, chap_idx, &cur)) return 0;
+        uint64_t total = (uint64_t)last.offset + last.length - first.offset;
+        if (total == 0) return 0;
+        uint32_t within = (offset > cur.offset) ? offset - cur.offset : 0;
+        if (within > cur.length) within = cur.length;
+        uint64_t done = (uint64_t)(cur.offset - first.offset) + within;
+        int pct = (int)((done * 100ULL) / total);
+        return pct > 100 ? 100 : pct;
+    }
+
+    /**
+     * Percentage (0-100) of a v2 chapter's text that lies before `offset`
+     * (absolute file offset of the first byte of the page being shown).
+     */
+    static int v2_chapter_percent(const Ebk2ChapterEntry& chap, uint32_t offset) {
+        if (chap.length == 0 || offset <= chap.offset) return 0;
+        uint32_t rel = offset - chap.offset;
+        if (rel >= chap.length) return 100;
+        return (int)(((uint64_t)rel * 100ULL) / chap.length);
     }
 
     static void list_books() {

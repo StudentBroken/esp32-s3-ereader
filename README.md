@@ -124,3 +124,11 @@ Open [`tools/web_serial/index.html`](file:///Users/xumic/Developer/esp32-s3-erea
 
 ### Option 2: High-Speed USB Serial
 Connect the XIAO ESP32-S3 via USB-C, switch to the **Web Serial (USB-C)** tab on the website, click **Connect USB Serial Port**, and stream books over USB.
+
+## Colour screensaver (WiFi)
+
+- Images: 300x400 portrait, white/black/red, 2 bits per pixel (SSI v1, see `include/screensaver.h`), stored in a Google Sheet as CRC-protected base64 chunks with a parity chunk.
+- Prepare them with `screensaver.html` in the Epub tool, import the CSV into a sheet tab `Images`, deploy `tools/screensaver/apps_script.gs`.
+- Set WiFi (4 slots) + web app URL (`...exec?k=SECRET`) in the Epub tool's `ble.html` (device menu: Library -> Add More Books / BLE).
+- Flow: after sleep, Zzz shows for 30 s (touch cancels), then the next cached image is drawn with a full tri-colour refresh. Every 12 h the device wakes: weekly it downloads 14 random images (retries on the next 12 h wake, max 4 attempts), every 24 h it shows the next cached image. Only runs above 25% battery. Toggle and "Screensaver Now" are in the settings menu.
+- Idle auto-sleep is 5 minutes. Library: tap a book for Read / Move up / Move down / Delete. "Jump to Chapter" opens a scrollable table of contents.

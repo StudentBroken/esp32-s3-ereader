@@ -67,6 +67,11 @@ class GxEPD2_420_Z96 : public GxEPD2_EPD
     void powerOff(); // turns off generation of panel driving voltages, avoids screen fading over time
     void hibernate(); // turns powerOff() and sets controller to deep sleep for minimum power use, ONLY if wakeable by RST (rst >= 0)
 	
+    // Full tri-colour (black/white/red) refresh using the controller's built-in waveform.
+    // bw_plane: 1 = white, 0 = black. red_plane: 1 = not red, 0 = red. Both 15,000 bytes, native 400x300 row-major.
+    // Takes ~15 s. Leaves the panel in deep sleep; the next BW operation re-initialises it.
+    void drawTriColor(const uint8_t* bw_plane, const uint8_t* red_plane);
+
 	uint8_t grayScale = 3; // gray level: 0 white, 1 light gray, 2 dark gray, 3 black
 	void setGrayscale(uint8_t gray); // set gray level: 0 white, 1 light gray, 2 dark gray, 3 black
 	

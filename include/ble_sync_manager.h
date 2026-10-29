@@ -10,6 +10,7 @@
 #include <vector>
 #include "storage_manager.h"
 #include "config_manager.h"
+#include "screensaver.h"
 
 #define BLE_SERVICE_UUID        "19b10000-e8f2-537e-4f6c-d104768a1214"
 #define BLE_CHAR_CTRL_UUID      "19b10001-e8f2-537e-4f6c-d104768a1214"
@@ -36,6 +37,8 @@ enum BleCtrlCmd {
     CMD_DELETE_BOOK     = 0x05,
     CMD_RENAME_BOOK     = 0x06,
     CMD_SELECT_BOOK     = 0x07,
+    CMD_WIFI_SET        = 0x20,  // [slot][ssid_len][ssid][pass...]  (empty ssid clears the slot)
+    CMD_SS_CONFIG       = 0x21,  // [enabled][url...]
     CMD_START_OTA       = 0x10,
     CMD_FINISH_OTA      = 0x11,
     CMD_ABORT_OTA       = 0x12
@@ -78,6 +81,24 @@ private:
     std::string pending_rename_new;
     volatile bool pending_select_book = false;
     std::string pending_select_path;
+    volatile bool pending_wifi_set = false;
+    uint8_t pending_wifi_slot = 0;
+    std::string pending_wifi_ssid;
+    std::string pending_wifi_pass;
+    volatile bool pending_ss_config = false;
+    bool pending_ss_enabled = true;
+    std::string pending_ss_url;
+    volatile bool pending_progress_reset = false;
+    char pending_progress_reset_path[64] = {0};
+
+    // Appends `src` to `out` as JSON string content (escapes quotes/backslashes, drops control chars)
+    static void json_escape_append(String& out, const char* src) {
+        for (const char* p = src; *p; p++) {
+            unsigned char c = (unsigned char)*p;
+            if (c == '"' || c == '\\') { out += '\\'; out += (char)c; }
+            else if (c >= 0x20) { out += (char)c; }
+        }
+    }
 
     void onConnect(NimBLEServer* pServer) override {
         client_connected = true;
@@ -175,6 +196,10 @@ private:
                     send_status(STATUS_SUCCESS);
                     current_state = BLE_SYNC_SUCCESS;
                     new_book_ready = true;
+                    // Same filename may carry stale bookmark offsets from a previous copy of the book
+                    strncpy(pending_progress_reset_path, target_file_path, sizeof(pending_progress_reset_path) - 1);
+                    pending_progress_reset_path[sizeof(pending_progress_reset_path) - 1] = '\0';
+                    pending_progress_reset = true;
                 }
 
             } else if (cmd == CMD_ABORT) {
@@ -214,6 +239,22 @@ private:
                 if (target[0] != '/') target = "/" + target;
                 pending_select_path = target;
                 pending_select_book = true;
+
+            } else if (cmd == CMD_WIFI_SET && val.length() >= 3) {
+                start_time = millis(); // Refresh timeout
+                uint8_t ssid_len = (uint8_t)val[2];
+                if (val.length() >= (size_t)(3 + ssid_len) && ssid_len <= 32) {
+                    pending_wifi_slot = (uint8_t)val[1];
+                    pending_wifi_ssid = val.substr(3, ssid_len);
+                    pending_wifi_pass = val.substr(3 + ssid_len);
+                    pending_wifi_set = true;
+                }
+
+            } else if (cmd == CMD_SS_CONFIG && val.length() >= 2) {
+                start_time = millis(); // Refresh timeout
+                pending_ss_enabled = (val[1] != 0);
+                pending_ss_url = val.substr(2);
+                pending_ss_config = true;
 
             } else if (cmd == CMD_START_OTA && val.length() >= 5) {
                 // Byte 0: CMD_START_OTA (0x10)
@@ -351,16 +392,43 @@ private:
         for (int i = 0; i < count; i++) {
             if (i > 0) json += ",";
             int32_t saved_frame = ConfigManager::get_book_progress(books[i].filename);
-            String safe_title = String(books[i].title);
-            safe_title.replace("\"", "\\\"");
+            bool is_v2 = (books[i].format_version == EBK_FORMAT_V2_TEXT);
+            int cur_unit = saved_frame + 1; // v1: page, v2: chapter
+
             json += "{\"file\":\"";
-            json += String(books[i].filename);
+            json_escape_append(json, books[i].filename);
             json += "\",\"title\":\"";
-            json += safe_title;
+            json_escape_append(json, books[i].title);
             json += "\",\"size\":";
             json += String((unsigned int)books[i].file_size);
+
+            if (is_v2) {
+                // Chapter-based progress: chapter N of M, and percent through that chapter
+                uint16_t ch = 0;
+                uint32_t off = 0;
+                ConfigManager::get_book_progress(books[i].filename, &ch, &off);
+                if (ch >= books[i].total_chapters) { ch = 0; off = 0; }
+                int pct = 0;
+                char ctitle[33] = {0};
+                Ebk2ChapterEntry ce;
+                if (StorageManager::read_v2_chapter_entry(books[i].filename, ch, &ce)) {
+                    pct = StorageManager::v2_chapter_percent(ce, off);
+                    memcpy(ctitle, ce.title, sizeof(ce.title));
+                }
+                cur_unit = ch + 1;
+                json += ",\"fmt\":2,\"ch\":";
+                json += String((unsigned int)(ch + 1));
+                json += ",\"chs\":";
+                json += String((unsigned int)books[i].total_chapters);
+                json += ",\"pct\":";
+                json += String(pct);
+                json += ",\"ctitle\":\"";
+                json_escape_append(json, ctitle);
+                json += "\"";
+            }
+
             json += ",\"cur\":";
-            json += String(saved_frame + 1);
+            json += String(cur_unit);
             json += ",\"tot\":";
             json += String(books[i].total_frames);
             json += "}";
@@ -528,6 +596,12 @@ public:
             return BLE_SYNC_INACTIVE;
         }
 
+        // Clear stale bookmark of a freshly uploaded book (same filename may have old offsets)
+        if (pending_progress_reset) {
+            pending_progress_reset = false;
+            ConfigManager::set_book_progress(pending_progress_reset_path, 0, 0, 0);
+        }
+
         // Handle queued BLE operations in the main loop context (safe stack size)
         if (pending_list_books) {
             pending_list_books = false;
@@ -544,6 +618,19 @@ public:
         if (pending_select_book) {
             pending_select_book = false;
             process_select_book(pending_select_path);
+        }
+        if (pending_wifi_set) {
+            pending_wifi_set = false;
+            ScreensaverConfig::set_wifi(pending_wifi_slot, String(pending_wifi_ssid.c_str()), String(pending_wifi_pass.c_str()));
+            Serial.printf("[BLE] WiFi slot %u %s\n", pending_wifi_slot, pending_wifi_ssid.empty() ? "cleared" : "saved");
+            send_status(STATUS_SUCCESS);
+        }
+        if (pending_ss_config) {
+            pending_ss_config = false;
+            ScreensaverConfig::set_enabled(pending_ss_enabled);
+            ScreensaverConfig::set_url(String(pending_ss_url.c_str()));
+            Serial.println("[BLE] Screensaver config saved.");
+            send_status(STATUS_SUCCESS);
         }
 
         // Trigger reboot into newly flashed OTA partition

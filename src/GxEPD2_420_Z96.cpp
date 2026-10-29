@@ -330,6 +330,52 @@ void GxEPD2_420_Z96::_PowerOff()
   _using_partial_mode = false;
 }
 
+void GxEPD2_420_Z96::drawTriColor(const uint8_t* bw_plane, const uint8_t* red_plane)
+{
+  // Sequence follows GxEPD2_420c_GDEY042Z98 (SSD1683 tri-colour 4.2"): SWRESET, border 0x05, built-in
+  // temperature sensor, write B/W RAM (0x24) and red RAM (0x26), update with OTP waveform (0xF7).
+  const uint32_t plane_bytes = uint32_t(WIDTH) * uint32_t(HEIGHT) / 8;
+  _reset();
+  epd_spi_active = true;
+  _writeCommand(0x12); // SWRESET
+  epd_spi_active = false;
+  delay(10);
+  _waitWhileBusy("tri_swreset", 1000);
+  epd_spi_active = true;
+  _writeCommand(0x01); // Driver output control
+  _writeData((HEIGHT - 1) % 256);
+  _writeData((HEIGHT - 1) / 256);
+  _writeData(0x00);
+  _writeCommand(0x3C); // Border waveform
+  _writeData(0x05);
+  _writeCommand(0x18); // Built-in temperature sensor
+  _writeData(0x80);
+  _setPartialRamArea(0, 0, WIDTH, HEIGHT);
+  _writeCommand(0x24);
+  _startTransfer();
+  for (uint32_t i = 0; i < plane_bytes; i++) _transfer(bw_plane[i]);
+  _endTransfer();
+  _setPartialRamArea(0, 0, WIDTH, HEIGHT);
+  _writeCommand(0x26);
+  _startTransfer();
+  for (uint32_t i = 0; i < plane_bytes; i++) _transfer(red_plane[i]);
+  _endTransfer();
+  _writeCommand(0x22);
+  _writeData(0xF7);
+  _writeCommand(0x20);
+  epd_spi_active = false;
+  _waitWhileBusy("tri_update", 40000);
+  epd_spi_active = true;
+  _writeCommand(0x10); // deep sleep
+  _writeData(0x01);
+  epd_spi_active = false;
+  _hibernating = true;
+  _power_is_on = false;
+  _using_partial_mode = false;
+  _initial_refresh = true;
+  _initial_write = true;
+}
+
 void GxEPD2_420_Z96::setGrayscale(uint8_t gray) // set gray level: 0 white, 1 light gray, 2 dark gray, 3 black
 {
   _SetGrayscale(gray);

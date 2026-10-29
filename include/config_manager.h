@@ -7,7 +7,7 @@
 #include "hardware_config.h"
 
 #define MAX_BOOK_PATH_LEN 64
-#define CONFIG_SCHEMA_VERSION 1
+#define CONFIG_SCHEMA_VERSION 2
 
 /**
  * In-memory mirror of persistent reader configuration.
@@ -18,7 +18,7 @@ struct ReaderConfig {
     int32_t  current_frame;
     uint8_t  rotation;            // 0: Landscape, 1: Portrait 90 deg CW
     uint8_t  refresh_interval;    // Full anti-ghosting refresh interval (pages, default 8)
-    uint16_t auto_sleep_min;      // Inactivity timeout in minutes before Stage 2 sleep (default 60)
+    uint16_t auto_sleep_min;      // Inactivity timeout in minutes before Stage 2 sleep (default 5)
     uint32_t boot_count;          // Total boot/wake cycles (survives power loss)
     uint32_t total_page_turns;    // Cumulative lifetime page turns
     uint32_t last_bat_mv;         // Last measured battery millivolts
@@ -79,7 +79,7 @@ public:
             config.current_frame = 0;
             config.rotation = ORIENT_LANDSCAPE;
             config.refresh_interval = 8;
-            config.auto_sleep_min = 60;
+            config.auto_sleep_min = 5;
             config.boot_count = 1;
             config.total_page_turns = 0;
             config.last_bat_mv = 3800;
@@ -111,7 +111,7 @@ public:
             config.current_frame = prefs.getInt("cur_frame", 0);
             config.rotation = prefs.getUChar("rotation", ORIENT_LANDSCAPE);
             config.refresh_interval = prefs.getUChar("refresh_inv", 8);
-            config.auto_sleep_min = prefs.getUInt("sleep_min", 60);
+            config.auto_sleep_min = prefs.getUInt("sleep_min", 5);
             config.boot_count = prefs.getUInt("boot_count", 0) + 1;
             config.total_page_turns = prefs.getUInt("page_turns", 0);
             config.last_bat_mv = prefs.getUInt("last_bat_mv", 3800);
@@ -127,6 +127,11 @@ public:
             // Future firmware migration hook
             if (stored_ver < CONFIG_SCHEMA_VERSION) {
                 Serial.printf("[NVS] Migrating settings from Schema v%u to v%u...\n", stored_ver, CONFIG_SCHEMA_VERSION);
+                if (stored_ver < 2) {
+                    // v2: default inactivity sleep dropped from 60 to 5 minutes
+                    config.auto_sleep_min = 5;
+                    prefs.putUInt("sleep_min", config.auto_sleep_min);
+                }
                 config.schema_version = CONFIG_SCHEMA_VERSION;
                 prefs.putUInt("cfg_ver", config.schema_version);
                 Serial.println("[NVS] Migration complete!");
