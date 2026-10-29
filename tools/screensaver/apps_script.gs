@@ -1,23 +1,25 @@
 /**
  * E-reader colour screensaver backend (Google Apps Script web app).
  *
- * Sheet tab "Images", row 1 = header, then one row per chunk:
+ * Sheet tab "__SHEET__", row 1 = header, then one row per chunk:
  *   A image_id | B chunk_idx | C crc32 (decimal) | D base64 data
- * (generate the CSV with the Screensaver Converter page, see firmware docs in include/screensaver.h)
+ * Generate the CSV with the Screensaver Converter page and import it once; you never have to
+ * update it again. The device asks for N random images every week and prefers ones it does not
+ * already hold, so a sheet with as few as ~20 images keeps rotating forever.
  *
  * Deploy: Deploy > New deployment > Web app > Execute as: Me, Who has access: Anyone.
  * Device calls (k must equal SECRET):
- *   ?a=list&n=14&k=SECRET            -> "SS1\nL 5,9,12,...\nEND"      (n random distinct image ids)
+ *   ?a=list&n=14&have=3,8&k=SECRET   -> "SS1\nL 5,9,12,...\nEND"   (n random ids, unseen first)
  *   ?a=img&id=5&k=SECRET             -> "SS1\nC 5 0 <crc hex> <base64>\n...\nEND"
  *   ?a=img&id=5&c=3,7&k=SECRET       -> only the listed chunk indexes (used for repairs)
  */
-const SECRET = 'change-me';
-const SHEET_NAME = 'Images';
+const SECRET = '__SECRET__';
+const SHEET_NAME = '__SHEET__';
 
 function doGet(e) {
   const p = e.parameter || {};
   if (p.k !== SECRET) return text_('ERR forbidden');
-  if (p.a === 'list') return text_(list_(parseInt(p.n, 10) || 14));
+  if (p.a === 'list') return text_(list_(parseInt(p.n, 10) || 14, p.have));
   if (p.a === 'img') return text_(image_(parseInt(p.id, 10), p.c));
   return text_('ERR bad request');
 }
@@ -41,21 +43,31 @@ function ids_() {
   return ids;
 }
 
-function list_(n) {
-  const ids = ids_();
-  // Fisher-Yates shuffle, take n
-  for (let i = ids.length - 1; i > 0; i--) {
+function shuffle_(a) {
+  for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    const t = ids[i]; ids[i] = ids[j]; ids[j] = t;
+    const t = a[i]; a[i] = a[j]; a[j] = t;
   }
-  return 'SS1\nL ' + ids.slice(0, Math.min(n, ids.length)).join(',') + '\nEND';
+  return a;
+}
+
+// Random picks, images the device does not hold yet come first. With 30 images and n=14 every
+// sync brings new pictures; with fewer than n images you simply get all of them.
+function list_(n, haveCsv) {
+  const have = {};
+  (haveCsv ? String(haveCsv).split(',') : []).forEach(function (x) { have[Number(x)] = true; });
+  const ids = ids_();
+  const fresh = shuffle_(ids.filter(function (id) { return !have[id]; }));
+  const old = shuffle_(ids.filter(function (id) { return have[id]; }));
+  const pick = fresh.concat(old).slice(0, Math.min(n, ids.length));
+  return 'SS1\nL ' + pick.join(',') + '\nEND';
 }
 
 function image_(id, chunkCsv) {
   const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_NAME);
   const last = sh.getLastRow();
   if (last < 2) return 'ERR empty';
-  const want = chunkCsv ? chunkCsv.split(',').map(Number) : null;
+  const want = chunkCsv ? String(chunkCsv).split(',').map(Number) : null;
   const data = sh.getRange(2, 1, last - 1, 4).getValues();
   const out = ['SS1'];
   for (let i = 0; i < data.length; i++) {

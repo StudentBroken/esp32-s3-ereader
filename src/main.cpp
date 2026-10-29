@@ -1801,8 +1801,8 @@ static void prepare_epd() {
     wait_menu_pad_release(6000);
     delay(200);
 
-    Serial.println("[PWR] Arming Power Pad (D9 / GPIO 8) as deep sleep wake source (threshold: +500 delta)...");
-    touchSleepWakeUpEnable(TOUCH_MENU_PIN, 500);
+    Serial.println("[PWR] Arming Power Pad (D9 / GPIO 8) as deep sleep wake source (threshold: +400 delta)...");
+    touchSleepWakeUpEnable(TOUCH_MENU_PIN, 400);
 
     // Reset sleep channel benchmark so current untouched state is captured as reference
     touch_pad_sleep_channel_reset_benchmark();
@@ -1810,7 +1810,7 @@ static void prepare_epd() {
 
     uint32_t benchmark = 0;
     touch_pad_sleep_channel_read_benchmark(TOUCH_PAD_MENU, &benchmark);
-    Serial.printf("[PWR] Benchmark captured: %u | Trigger threshold: >= %u\n", benchmark, benchmark + 500);
+    Serial.printf("[PWR] Benchmark captured: %u | Trigger threshold: >= %u\n", benchmark, benchmark + 400);
 
     if (ScreensaverConfig::ready()) {
         esp_sleep_enable_timer_wakeup(SS_WAKE_INTERVAL_US);
@@ -2082,24 +2082,14 @@ void setup() {
         if (wakeup_cause == ESP_SLEEP_WAKEUP_TIMER) {
             handle_timer_wake(bat_mv, bat_pct);   // never returns
         }
-        if (wakeup_cause == ESP_SLEEP_WAKEUP_TOUCHPAD && rtc_spurious_wakes < 20) {
-            // A real press arrives well after going to sleep AND reads far above the idle level on D9.
-            // Instant wakes (finger still on pad) and slow drift/noise wakes (seen ~20-30 s after sleeping)
-            // fail one of the two checks and go straight back to sleep without redrawing the screen.
+        if (wakeup_cause == ESP_SLEEP_WAKEUP_TOUCHPAD && rtc_spurious_wakes < 3) {
+            // A wake within 4 s of going to sleep means the finger was still on the pad (or noise).
+            // Do NOT sample the pad here: boot takes >1 s and a real tap has already ended by then.
             int64_t slept_us = wall_us() - rtc_sleep_entry_us;
-            bool instant = (slept_us >= 0 && slept_us < 4000000);
-            int hits = 0;
-            uint32_t last_raw = 0;
-            for (int i = 0; i < 10; i++) {
-                last_raw = touchRead(TOUCH_MENU_PIN);
-                if (rtc_menu_baseline && last_raw > rtc_menu_baseline + 600 && last_raw < rtc_menu_baseline + TOUCH_MAX_VALID_DELTA) hits++;
-                delay(20);
-            }
-            bool real_press = (rtc_menu_baseline == 0) || hits >= 5;
-            if (instant || !real_press) {
+            if (slept_us >= 0 && slept_us < 4000000) {
                 rtc_spurious_wakes++;
-                Serial.printf("[PWR] Spurious touch wake #%u (slept %lld ms, raw %u vs base %u, hits %d/10) -> back to sleep.\n",
-                              rtc_spurious_wakes, (long long)(slept_us / 1000), last_raw, rtc_menu_baseline, hits);
+                Serial.printf("[PWR] Spurious instant wake #%u (slept %lld ms) -> back to sleep.\n",
+                              rtc_spurious_wakes, (long long)(slept_us / 1000));
                 arm_and_deep_sleep();
             }
         }

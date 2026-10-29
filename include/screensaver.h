@@ -418,7 +418,12 @@ static inline bool ss_sync(uint32_t budget_ms = SS_SYNC_BUDGET_MS) {
     LittleFS.mkdir(SS_DIR);
 
     String body;
-    if (!ss_http_get(ss_build_url(base, "a=list&n=" + String(SS_IMAGES_PER_SYNC)), body)) return false;
+    // Tell the server what we already hold so it can prefer pictures we have not seen yet
+    String have;
+    for (uint32_t cid : ss_cached_ids()) { if (have.length()) have += ','; have += String((unsigned long)cid); }
+    String list_query = "a=list&n=" + String(SS_IMAGES_PER_SYNC);
+    if (have.length()) list_query += "&have=" + have;
+    if (!ss_http_get(ss_build_url(base, list_query), body)) return false;
     int l = body.indexOf("\nL ");
     if (body.indexOf("SS1") < 0 || l < 0) { Serial.println("[SS] bad list response"); return false; }
     int e = body.indexOf('\n', l + 3);
