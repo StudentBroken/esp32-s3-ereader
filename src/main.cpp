@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <Arduino.h>
 #include <SPI.h>
 #include <GxEPD2_BW.h>
@@ -202,6 +203,9 @@ void touch_hardware_reinit() {
 
 // Dedicated Touch Scanner Task running continuously on Core 0 at ~66Hz
 // Never blocks on e-ink SPI or BUSY pin refreshes!
+// Picture frame: keep scanning touch pads while the panel refreshes (taps are batched afterwards)
+volatile bool touch_in_busy_ok = false;
+
 void touch_task(void* pvParameters) {
     bool d4_is_held = false;
     uint32_t d4_press_start = 0;
@@ -224,7 +228,7 @@ void touch_task(void* pvParameters) {
         }
 
         bool is_busy = (digitalRead(EPD_BUSY_PIN) == HIGH);
-        if (is_busy) {
+        if (is_busy && !touch_in_busy_ok) {
             last_busy_end = millis();
             d4_press_start = 0;
             d4_is_held = false;
@@ -274,9 +278,15 @@ void touch_task(void* pvParameters) {
             fault_counter = 0;
         }
 
-        bool prev_touched = tracker_prev.update(TOUCH_DELTA_NAV, TOUCH_RELEASE_NAV, false);
-        bool next_touched = tracker_next.update(TOUCH_DELTA_NAV, TOUCH_RELEASE_NAV, false);
-        bool menu_touched = tracker_menu.update(TOUCH_DELTA_MENU, TOUCH_RELEASE_MENU, false);
+        // While the panel refreshes (picture frame only) the baselines are frozen so booster noise cannot
+        // retrain them, and any reading with two or more pads at once is rejected as common-mode noise.
+        bool prev_touched = tracker_prev.update(TOUCH_DELTA_NAV, TOUCH_RELEASE_NAV, is_busy);
+        bool next_touched = tracker_next.update(TOUCH_DELTA_NAV, TOUCH_RELEASE_NAV, is_busy);
+        bool menu_touched = tracker_menu.update(TOUCH_DELTA_MENU, TOUCH_RELEASE_MENU, is_busy);
+        if (is_busy && ((int)prev_touched + (int)next_touched + (int)menu_touched) >= 2) {
+            prev_touched = next_touched = menu_touched = false;
+        }
+        if (is_busy) menu_touched = false;   // D9 (exit/select) only counts while the panel is idle
 
         // Common-Mode Noise Filter:
         // A human finger only touches ONE pad at a time, UNLESS pressing Prev + Next together.
@@ -419,7 +429,8 @@ enum UiState {
     UI_STATE_BLE_SYNC,
     UI_STATE_BOOK_ACTIONS,
     UI_STATE_TOC,
-    UI_STATE_STATUS
+    UI_STATE_STATUS,
+    UI_STATE_FRAME
 };
 
 // Menu Item Identifiers
@@ -429,14 +440,31 @@ enum MenuItem {
     MENU_BLE_SYNC,
     MENU_ORIENTATION,
     MENU_JUMP,
+    MENU_PICTURE_FRAME,
+    MENU_FRAME_ORDER,
     MENU_PHOTO_MODE,
     MENU_SCREENSAVER_TOGGLE,
     MENU_SCREENSAVER_NOW,
     MENU_STATUS,
     MENU_CLEAN_REFRESH,
     MENU_SLEEP,
+    MENU_SUB_SS,
+    MENU_SUB_DEVICE,
+    MENU_BACK,
     MENU_COUNT
 };
+
+// Menu pages: 0 = main, 1 = screensaver & frame, 2 = device
+static int menu_page = 0;
+static const MenuItem MENU_PAGE_ITEMS[3][7] = {
+    { MENU_RESUME, MENU_LIBRARY, MENU_JUMP, MENU_PICTURE_FRAME, MENU_SUB_SS, MENU_SUB_DEVICE, MENU_SLEEP },
+    { MENU_FRAME_ORDER, MENU_SCREENSAVER_TOGGLE, MENU_PHOTO_MODE, MENU_SCREENSAVER_NOW, MENU_BACK, MENU_BACK, MENU_BACK },
+    { MENU_ORIENTATION, MENU_BLE_SYNC, MENU_STATUS, MENU_CLEAN_REFRESH, MENU_BACK, MENU_BACK, MENU_BACK },
+};
+static const int MENU_PAGE_COUNT[3] = { 7, 5, 5 };
+static const char* MENU_PAGE_TITLE[3] = { "QUICK OPTIONS", "SCREENSAVER & FRAME", "DEVICE" };
+static inline int menu_count() { return MENU_PAGE_COUNT[menu_page]; }
+static inline MenuItem menu_item_at(int i) { return MENU_PAGE_ITEMS[menu_page][i]; }
 
 // Sleep state across Deep Sleep in RTC SRAM
 RTC_DATA_ATTR SleepStage current_stage = STAGE_READING;
@@ -1057,7 +1085,7 @@ void render_menu_screen(uint8_t bat_pct) {
         display.setFont(NULL);
         display.setTextColor(GxEPD_WHITE);
         display.setCursor(card_x + 12, card_y + 11);
-        display.print("QUICK OPTIONS");
+        display.print(MENU_PAGE_TITLE[menu_page]);
 
         // Menu items
         const char* menu_labels[MENU_COUNT];
@@ -1067,35 +1095,43 @@ void render_menu_screen(uint8_t bat_pct) {
 
         menu_labels[MENU_RESUME]        = "Resume Reading";
         menu_labels[MENU_LIBRARY]       = "Library / Manage Books";
-        menu_labels[MENU_BLE_SYNC]      = "Wireless BLE Upload (Sync)";
+        menu_labels[MENU_BLE_SYNC]      = "Wireless BLE Upload";
         menu_labels[MENU_ORIENTATION]   = orient_buf;
         menu_labels[MENU_JUMP]          = (StorageManager::get_book_version(current_book_path) == EBK_FORMAT_V2_TEXT)
                                             ? "Jump to Chapter" : "Jump Page Scrubber";
         char ss_buf[36];
         snprintf(ss_buf, sizeof(ss_buf), "Colour Screensaver: %s", ScreensaverConfig::enabled() ? "ON" : "OFF");
         char photo_buf[36];
-        snprintf(photo_buf, sizeof(photo_buf), "Photo Frame Mode: %s", ScreensaverConfig::photo_mode() ? "ON" : "OFF");
+        snprintf(photo_buf, sizeof(photo_buf), "Photo Screensaver Mode: %s", ScreensaverConfig::photo_mode() ? "ON" : "OFF");
+        char fo_buf[36];
+        snprintf(fo_buf, sizeof(fo_buf), "Frame order: %s", ScreensaverConfig::frame_seq() ? "In order" : "Shuffle");
+        menu_labels[MENU_PICTURE_FRAME] = "Picture Frame";
+        menu_labels[MENU_SUB_SS]        = "Screensaver & Frame  >>";
+        menu_labels[MENU_SUB_DEVICE]    = "Device  >>";
+        menu_labels[MENU_BACK]          = "<< Back";
+        menu_labels[MENU_FRAME_ORDER]   = fo_buf;
         menu_labels[MENU_PHOTO_MODE] = photo_buf;
         menu_labels[MENU_SCREENSAVER_TOGGLE] = ss_buf;
-        menu_labels[MENU_SCREENSAVER_NOW]    = "Screensaver Now (Sleep)";
+        menu_labels[MENU_SCREENSAVER_NOW]    = "Show Screensaver Now";
         menu_labels[MENU_STATUS]        = "Status / Diagnostics";
         menu_labels[MENU_CLEAN_REFRESH] = "Full Anti-Ghost Refresh";
-        menu_labels[MENU_SLEEP]         = "Power Off / Sleep...";
+        menu_labels[MENU_SLEEP]         = "Sleep / Power Off";
 
         int start_y = card_y + 32;
-        int row_h = (card_h - 58) / MENU_COUNT;
+        int row_h = (card_h - 58) / menu_count();
+        if (row_h > 32) row_h = 32;
 
-        for (int i = 0; i < MENU_COUNT; i++) {
+        for (int i = 0; i < menu_count(); i++) {
             int item_y = start_y + (i * row_h);
             if (i == selected_menu_idx) {
                 display.fillRect(card_x + 6, item_y, card_w - 12, row_h - 3, GxEPD_BLACK);
                 display.setTextColor(GxEPD_WHITE);
                 display.setCursor(card_x + 14, item_y + (row_h / 2) - 4);
-                display.printf("> %s", menu_labels[i]);
+                display.printf("> %s", menu_labels[menu_item_at(i)]);
             } else {
                 display.setTextColor(GxEPD_BLACK);
                 display.setCursor(card_x + 14, item_y + (row_h / 2) - 4);
-                display.printf("  %s", menu_labels[i]);
+                display.printf("  %s", menu_labels[menu_item_at(i)]);
             }
         }
 
@@ -2239,6 +2275,166 @@ void run_manual_screensaver() {
     arm_and_deep_sleep();
 }
 
+// -----------------------------------------------------------------------------
+// Picture frame (awake slideshow): shuffled playlist, D4/D5 = prev/next image, auto-advance,
+// leaves the mode when the battery stays at or below 25% (USB power reads as full, so it keeps running).
+// -----------------------------------------------------------------------------
+#define FRAME_AUTO_MS        (10UL * 60UL * 1000UL)
+#define FRAME_BAT_CHECK_MS   30000UL
+static std::vector<uint32_t> frame_order;
+static int frame_pos = -1;
+static uint32_t frame_last_change = 0, frame_last_bat_check = 0;
+static uint8_t frame_low_hits = 0;
+
+static uint32_t frame_cur_id = 0, frame_last_refill = 0;
+static bool frame_refilled_once = false;
+
+static bool frame_file_exists(uint32_t id) {
+    char path[32]; ss_image_path(id, path, sizeof(path));
+    return LittleFS.exists(path);
+}
+
+/** Builds the playlist: fixed loop in sheet order, or a fresh shuffle that avoids repeating `avoid`. */
+static void frame_build_order(uint32_t avoid) {
+    frame_order.clear();
+    std::vector<uint32_t> cached = ss_cached_ids();
+    if (ScreensaverConfig::frame_seq()) {
+        String csv = ScreensaverConfig::frame_list();
+        int start = 0;
+        while (start < (int)csv.length()) {
+            int comma = csv.indexOf(',', start);
+            if (comma < 0) comma = csv.length();
+            uint32_t id = (uint32_t)strtoul(csv.substring(start, comma).c_str(), nullptr, 10);
+            if (id > 0 && frame_file_exists(id)) frame_order.push_back(id);
+            start = comma + 1;
+        }
+        if (frame_order.empty()) {   // no server order known: plain ascending ids
+            frame_order = cached;
+            std::sort(frame_order.begin(), frame_order.end());
+        }
+        return;
+    }
+    frame_order = cached;
+    for (int i = (int)frame_order.size() - 1; i > 0; i--) {
+        int j = esp_random() % (i + 1);
+        uint32_t t = frame_order[i]; frame_order[i] = frame_order[j]; frame_order[j] = t;
+    }
+    if (frame_order.size() > 1 && frame_order[0] == avoid) {
+        uint32_t t = frame_order[0]; frame_order[0] = frame_order[1]; frame_order[1] = t;
+    }
+}
+
+/**
+ * Playlist ran out: ask the server for more first (next images in sheet order, or a fresh random
+ * batch), then rebuild the playlist. Offline or failed: keep looping the cache. At most one check
+ * per 5 minutes so mashing "next" on a tiny cache does not hammer WiFi.
+ */
+static void frame_refill() {
+    bool seq = ScreensaverConfig::frame_seq();
+    if (ScreensaverConfig::ready() &&
+        (!frame_refilled_once || millis() - frame_last_refill > 5UL * 60UL * 1000UL)) {
+        uint32_t after = (seq && !frame_order.empty()) ? frame_order.back() : 0;
+        progress_begin("CHECKING FOR NEW IMAGES");
+        bool ok = ss_wifi_connect() && ss_sync(SS_SYNC_BUDGET_MS, seq, after);
+        ss_wifi_off();
+        progress_end();
+        frame_refilled_once = true;
+        frame_last_refill = millis();
+        Serial.printf("[FRAME] online refill %s\n", ok ? "OK" : "failed, reusing cache");
+    }
+    frame_build_order(frame_cur_id);
+}
+
+/** dir: +1 next, -1 previous, 0 first image. Playlist end triggers an online check. */
+static bool frame_show(int dir) {
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (dir == 0 || frame_order.empty()) {
+            frame_build_order(frame_cur_id);
+            frame_pos = 0;
+            if (ScreensaverConfig::frame_seq()) {   // resume the loop after the last image shown
+                uint32_t last = ScreensaverConfig::frame_last();
+                for (size_t i = 0; i < frame_order.size(); i++)
+                    if (frame_order[i] == last) { frame_pos = (int)((i + 1) % frame_order.size()); break; }
+            }
+        } else if (dir > 0) {
+            for (int k = 0; k < dir; k++) {   // several quick taps = one jump, one refresh
+                frame_pos++;
+                if (frame_pos >= (int)frame_order.size()) { frame_refill(); frame_pos = 0; }
+            }
+        } else {
+            for (int k = 0; k < -dir; k++) {
+                frame_pos--;
+                if (frame_pos < 0) frame_pos = (int)frame_order.size() - 1;
+            }
+        }
+        if (frame_order.empty()) return false;
+        frame_cur_id = frame_order[frame_pos];
+        Serial.printf("[FRAME] image %u (%d/%u, %s)\n", (unsigned)frame_cur_id, frame_pos + 1,
+                      (unsigned)frame_order.size(), ScreensaverConfig::frame_seq() ? "in order" : "shuffle");
+        bool ok = ss_show_image(display.epd2, frame_cur_id);
+        if (ok) {
+            ScreensaverConfig::set_frame_last(frame_cur_id);
+            frame_last_change = millis();
+            return true;
+        }
+        if (dir == 0) dir = 1;   // corrupt image was removed; carry on
+    }
+    return false;
+}
+
+static void frame_exit(const char* notice) {
+    Serial.printf("[FRAME] leaving picture frame mode%s%s\n", notice ? ": " : "", notice ? notice : "");
+    touch_in_busy_ok = false;
+    current_ui_state = UI_STATE_READING;
+    uint32_t mv = read_battery_millivolts();
+    uint8_t pct = calculate_battery_percentage(mv);
+    render_current_reading_page(mv, pct, /*fast_bw=*/false);
+    if (notice) { show_notice("Picture frame stopped", notice); }
+}
+
+static void frame_start() {
+    uint32_t mv = read_battery_millivolts();
+    uint8_t pct = calculate_battery_percentage(mv);
+    if (pct <= SS_BATTERY_MIN_PCT) {
+        show_notice("Battery below 25%", "Picture frame unavailable");
+        delay(2500);
+        render_menu_screen(pct);
+        return;
+    }
+    if (ss_cached_ids().empty()) {
+        show_notice("No images stored", "Run Screensaver sync first");
+        delay(2500);
+        render_menu_screen(pct);
+        return;
+    }
+    frame_pos = -1;
+    frame_order.clear();
+    frame_low_hits = 0;
+    current_ui_state = UI_STATE_FRAME;
+    touch_in_busy_ok = true;
+    if (!frame_show(0)) {
+        frame_exit("No readable images");
+        return;
+    }
+    frame_last_bat_check = millis();
+}
+
+/** Called from loop() while in frame mode: auto-advance + low-battery exit. */
+static void frame_tick() {
+    if (millis() - frame_last_bat_check >= FRAME_BAT_CHECK_MS) {
+        frame_last_bat_check = millis();
+        uint32_t mv = read_battery_millivolts();
+        uint8_t pct = calculate_battery_percentage(mv);
+        if (mv > 2500 && pct <= SS_BATTERY_MIN_PCT) frame_low_hits++; else frame_low_hits = 0;
+        if (frame_low_hits >= 2) {   // two consecutive low readings, avoids a single noisy sample
+            frame_exit("Battery below 25%");
+            return;
+        }
+    }
+    if (millis() - frame_last_change >= FRAME_AUTO_MS) frame_show(1);
+}
+
+
 void setup() {
     boot_count++;
     Serial.begin(115200);
@@ -2438,6 +2634,7 @@ void open_settings_menu() {
     Serial.println("\n[APP] >>> Opening Settings / Power Menu! <<<");
     clear_input_queue();
     current_ui_state = UI_STATE_MENU;
+    menu_page = 0;
     selected_menu_idx = 0;
     menu_active_timer = millis();
     uint32_t mv = read_battery_millivolts();
@@ -2652,6 +2849,10 @@ void loop() {
             Serial.println("\n[CMD] >>> Serial screensaver now <<<");
             run_manual_screensaver();
         }
+        else if (c == 'f') {
+            Serial.println("\n[CMD] >>> Serial picture frame <<<");
+            frame_start();
+        }
         else if (c == 'v') {
             render_status_screen(calculate_battery_percentage(read_battery_millivolts()));
             current_ui_state = UI_STATE_STATUS;
@@ -2861,8 +3062,8 @@ void loop() {
                             xQueueReceive(inputQueue, &peek_evt, 0);
                             step++;
                         }
-                        selected_menu_idx = (selected_menu_idx - step) % MENU_COUNT;
-                        if (selected_menu_idx < 0) selected_menu_idx += MENU_COUNT;
+                        selected_menu_idx = (selected_menu_idx - step) % menu_count();
+                        if (selected_menu_idx < 0) selected_menu_idx += menu_count();
                         Serial.printf("\n[MENU] Up (via %s, step %d) -> Selected Item #%d\n",
                                       (up_evt == EVENT_PREV ? "D4" : "D5"), step, selected_menu_idx);
                         menu_dirty = true;
@@ -2874,7 +3075,7 @@ void loop() {
                             xQueueReceive(inputQueue, &peek_evt, 0);
                             step++;
                         }
-                        selected_menu_idx = (selected_menu_idx + step) % MENU_COUNT;
+                        selected_menu_idx = (selected_menu_idx + step) % menu_count();
                         Serial.printf("\n[MENU] Down (via %s, step %d) -> Selected Item #%d\n",
                                       (down_evt == EVENT_PREV ? "D4" : "D5"), step, selected_menu_idx);
                         menu_dirty = true;
@@ -2885,7 +3086,17 @@ void loop() {
                         uint32_t mv = read_battery_millivolts();
                         uint8_t pct = calculate_battery_percentage(mv);
 
-                        switch (selected_menu_idx) {
+                        switch (menu_item_at(selected_menu_idx)) {
+                            case MENU_SUB_SS:
+                                menu_page = 1; selected_menu_idx = 0; render_menu_screen(pct);
+                                break;
+                            case MENU_SUB_DEVICE:
+                                menu_page = 2; selected_menu_idx = 0; render_menu_screen(pct);
+                                break;
+                            case MENU_BACK:
+                                selected_menu_idx = (menu_page == 1) ? 4 : 5;   // land on the submenu entry we came from
+                                menu_page = 0; render_menu_screen(pct);
+                                break;
                             case MENU_RESUME:
                                 current_ui_state = UI_STATE_READING;
                                 render_current_reading_page(mv, pct);
@@ -2912,6 +3123,14 @@ void loop() {
                                 jump_target_frame = (StorageManager::get_book_version(current_book_path) == EBK_FORMAT_V2_TEXT)
                                                         ? (int)current_chapter_idx : current_frame;
                                 render_jump_screen(jump_target_frame, total_frames);
+                                break;
+                            case MENU_PICTURE_FRAME:
+                                frame_start();
+                                break;
+                            case MENU_FRAME_ORDER:
+                                ScreensaverConfig::set_frame_seq(!ScreensaverConfig::frame_seq());
+                                Serial.printf("[SETTINGS] Frame order: %s\n", ScreensaverConfig::frame_seq() ? "in order" : "shuffle");
+                                render_menu_screen(pct);
                                 break;
                             case MENU_PHOTO_MODE:
                                 if (ScreensaverConfig::photo_mode()) {
@@ -2998,6 +3217,30 @@ void loop() {
                         } else if (selected_library_idx < book_count) {
                             open_book_actions(selected_library_idx);
                         }
+                    }
+                    break;
+                }
+
+                case UI_STATE_FRAME: {
+                    Serial.printf("[FRAME] event %d\n", (int)evt);
+                    if (evt == EVENT_NEXT || evt == EVENT_PREV) {
+                        // Collect further taps (also those made during the last refresh) before starting the
+                        // ~15 s refresh: two quick Next taps skip two images in a single refresh.
+                        int net = (evt == EVENT_NEXT) ? 1 : -1;
+                        bool leave = false;
+                        uint32_t t = millis();
+                        while (millis() - t < 1000 && !leave) {
+                            ButtonEvent e2;
+                            if (xQueueReceive(inputQueue, &e2, pdMS_TO_TICKS(20)) == pdTRUE) {
+                                if (e2 == EVENT_NEXT)      { net++; t = millis(); }
+                                else if (e2 == EVENT_PREV) { net--; t = millis(); }
+                                else if (e2 == EVENT_MENU_TAP || e2 == EVENT_MENU_HOLD) leave = true;
+                            }
+                        }
+                        if (leave) frame_exit(nullptr);
+                        else if (net != 0) frame_show(net);
+                    } else if (evt == EVENT_MENU_TAP || evt == EVENT_MENU_HOLD) {
+                        frame_exit(nullptr);
                     }
                     break;
                 }
@@ -3251,7 +3494,7 @@ void loop() {
     // =========================================================================
     // Menu & Power confirmation & Library auto-close after 15 seconds of inactivity
     // (Exempt UI_STATE_BLE_SYNC, which runs its own 60-second hardware timer)
-    if (current_ui_state != UI_STATE_READING && current_ui_state != UI_STATE_BLE_SYNC && 
+    if (current_ui_state != UI_STATE_READING && current_ui_state != UI_STATE_BLE_SYNC && current_ui_state != UI_STATE_FRAME && 
         (millis() - menu_active_timer >= MENU_TIMEOUT_MS)) {
         Serial.println("\n[MENU] Menu timed out. Returning to reading mode...");
         menu_dirty = false;
@@ -3264,6 +3507,7 @@ void loop() {
 
     // Reading timeout: auto-enter Stage 2 deep sleep (randomized Zzz screensaver) after the inactivity timeout (default 5 min)
     if (current_ui_state == UI_STATE_BLE_SYNC) awake_start = millis();
+    if (current_ui_state == UI_STATE_FRAME) { awake_start = millis(); frame_tick(); }
     if (millis() - awake_start >= awake_timeout_ms()) {
         Serial.println("\n[APP] Reading timeout reached! Auto-transitioning to STAGE 2 (Zzz Screensaver)...");
         uint32_t mv = read_battery_millivolts();

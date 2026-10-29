@@ -191,6 +191,14 @@ public:
         p.end();
     }
 
+    // Picture frame: 0 = shuffle, 1 = fixed loop in sheet order; server-ordered playlist; last id shown
+    static bool frame_seq() { Preferences p; p.begin("ss", true); bool v = p.getUChar("fseq", 0); p.end(); return v; }
+    static void set_frame_seq(bool on) { Preferences p; p.begin("ss", false); p.putUChar("fseq", on ? 1 : 0); p.end(); }
+    static String frame_list() { Preferences p; p.begin("ss", true); String v = p.getString("flist", ""); p.end(); return v; }
+    static void set_frame_list(const String& v) { Preferences p; p.begin("ss", false); p.putString("flist", v); p.end(); }
+    static uint32_t frame_last() { Preferences p; p.begin("ss", true); uint32_t v = p.getUInt("flast", 0); p.end(); return v; }
+    static void set_frame_last(uint32_t v) { Preferences p; p.begin("ss", false); p.putUInt("flast", v); p.end(); }
+
     // 12 h wake counter, sync retry state and rotation index
     static uint32_t tick() { Preferences p; p.begin("ss", true); uint32_t v = p.getUInt("tick", 0); p.end(); return v; }
     static void set_tick(uint32_t v) { Preferences p; p.begin("ss", false); p.putUInt("tick", v); p.end(); }
@@ -449,7 +457,7 @@ static inline bool ss_fetch_image(const String& base_url, uint32_t id) {
  * Full sync: asks for SS_IMAGES_PER_SYNC random ids, downloads them and replaces the old cache.
  * WiFi must already be connected. Returns true only if every requested image was stored.
  */
-static inline bool ss_sync(uint32_t budget_ms = SS_SYNC_BUDGET_MS) {
+static inline bool ss_sync(uint32_t budget_ms = SS_SYNC_BUDGET_MS, bool seq = false, uint32_t seq_after = 0) {
     String base = ScreensaverConfig::url();
     uint32_t t0 = millis();
     LittleFS.mkdir(SS_DIR);
@@ -459,7 +467,8 @@ static inline bool ss_sync(uint32_t budget_ms = SS_SYNC_BUDGET_MS) {
     String have;
     for (uint32_t cid : ss_cached_ids()) { if (have.length()) have += ','; have += String((unsigned long)cid); }
     String list_query = "a=list&n=" + String(SS_IMAGES_PER_SYNC);
-    if (have.length()) list_query += "&have=" + have;
+    if (seq) list_query += "&mode=seq&after=" + String((unsigned long)seq_after);   // next images in sheet order
+    else if (have.length()) list_query += "&have=" + have;
     if (!ss_http_get(ss_build_url(base, list_query), body)) return false;
     int l = body.indexOf("\nL ");
     if (body.indexOf("SS1") < 0 || l < 0) { ss_log("[SS] bad list response\n"); return false; }
@@ -509,6 +518,7 @@ static inline bool ss_sync(uint32_t budget_ms = SS_SYNC_BUDGET_MS) {
             if (!keep) { char path[32]; ss_image_path(old, path, sizeof(path)); LittleFS.remove(path); }
         }
         ScreensaverConfig::set_shown(0);
+        if (seq) ScreensaverConfig::set_frame_list(csv);   // remember the loop order for the picture frame
     }
     return complete;
 }

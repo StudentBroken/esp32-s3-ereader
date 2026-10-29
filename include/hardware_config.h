@@ -62,29 +62,42 @@ enum ScreenOrientation {
 #define BAT_DIVIDER_RATIO   2.0f // Equal resistors (100k+100k or 470k+470k) divide voltage by 2
 
 /**
- * Reads battery voltage in millivolts with switched-ground power gating and 16-sample averaging.
+ * Reads battery voltage in millivolts with switched-ground power gating.
+ * Stabilised: 7 spaced bursts of 16 samples, out-of-range bursts (ADC glitches such as 6 V readings)
+ * are discarded, the median of the rest is taken and smoothed with an EMA kept in RTC memory.
  * Achieves true 0 uA quiescent current drain during deep sleep!
  */
+RTC_DATA_ATTR static uint32_t bat_filtered_mv = 0;
+
 inline uint32_t read_battery_millivolts() {
-    // 1. Enable ground path
     pinMode(BAT_GND_SWITCH_PIN, OUTPUT);
     digitalWrite(BAT_GND_SWITCH_PIN, LOW);
-    
-    // 2. RC settling delay: 100k||100k (50k) with 10nF cap -> tau = 0.5ms
-    delayMicroseconds(800);
+    delayMicroseconds(800);   // RC settling: 100k||100k (50k) with 10nF cap -> tau = 0.5ms
 
-    // 3. 16-sample burst with factory calibrated analogReadMilliVolts
-    uint32_t raw_mv_sum = 0;
-    const int SAMPLES = 16;
-    for (int i = 0; i < SAMPLES; i++) {
-        raw_mv_sum += analogReadMilliVolts(BAT_ADC_PIN);
+    uint32_t bursts[7];
+    int n = 0;
+    for (int b = 0; b < 7; b++) {
+        uint32_t sum = 0;
+        for (int i = 0; i < 16; i++) sum += analogReadMilliVolts(BAT_ADC_PIN);
+        uint32_t mv = (uint32_t)((sum / 16) * BAT_DIVIDER_RATIO);
+        if (mv >= 2500 && mv <= 4600) bursts[n++] = mv;   // plausible single-cell LiPo range only
+        delay(2);
     }
+    pinMode(BAT_GND_SWITCH_PIN, INPUT);   // cut off all current flow
 
-    // 4. Return ground switch to high-impedance INPUT (cuts off all current flow)
-    pinMode(BAT_GND_SWITCH_PIN, INPUT);
-
-    uint32_t avg_adc_mv = raw_mv_sum / SAMPLES;
-    return (uint32_t)(avg_adc_mv * BAT_DIVIDER_RATIO);
+    if (n == 0) return bat_filtered_mv;   // every burst was a glitch: keep the last good value (0 if none)
+    for (int i = 1; i < n; i++) {         // insertion sort, median
+        uint32_t v = bursts[i]; int j = i - 1;
+        while (j >= 0 && bursts[j] > v) { bursts[j + 1] = bursts[j]; j--; }
+        bursts[j + 1] = v;
+    }
+    uint32_t med = bursts[n / 2];
+    if (bat_filtered_mv == 0 || (med > bat_filtered_mv ? med - bat_filtered_mv : bat_filtered_mv - med) > 250) {
+        bat_filtered_mv = med;   // first reading or genuine step (USB plugged in / out): snap
+    } else {
+        bat_filtered_mv = (bat_filtered_mv * 7 + med * 3 + 5) / 10;   // EMA, alpha 0.3
+    }
+    return bat_filtered_mv;
 }
 
 /**

@@ -10,6 +10,7 @@
  * Deploy: Deploy > New deployment > Web app > Execute as: Me, Who has access: Anyone.
  * Device calls (k must equal SECRET):
  *   ?a=list&n=14&have=3,8&k=SECRET   -> "SS1\nL 5,9,12,...\nEND"   (n random ids, unseen first)
+ *   ?a=list&n=14&mode=seq&after=9&k=SECRET -> next n ids in sheet order after id 9, wrapping (picture frame loop)
  *   ?a=img&id=5&k=SECRET             -> "SS1\nC 5 0 <crc hex> <base64>\n...\nEND"
  *   ?a=img&id=5&c=3,7&k=SECRET       -> only the listed chunk indexes (used for repairs)
  */
@@ -19,7 +20,7 @@ const SHEET_NAME = '__SHEET__';
 function doGet(e) {
   const p = e.parameter || {};
   if (p.k !== SECRET) return text_('ERR forbidden');
-  if (p.a === 'list') return text_(list_(parseInt(p.n, 10) || 14, p.have));
+  if (p.a === 'list') return text_(list_(parseInt(p.n, 10) || 14, p.have, p.mode, parseInt(p.after, 10) || 0));
   if (p.a === 'img') return text_(image_(parseInt(p.id, 10), p.c));
   return text_('ERR bad request');
 }
@@ -53,7 +54,15 @@ function shuffle_(a) {
 
 // Random picks, images the device does not hold yet come first. With 30 images and n=14 every
 // sync brings new pictures; with fewer than n images you simply get all of them.
-function list_(n, haveCsv) {
+function list_(n, haveCsv, mode, after) {
+  if (mode === 'seq') {   // fixed loop: the next n ids in ascending order after `after`, wrapping around
+    const all = ids_().slice().sort(function (a, b) { return a - b; });
+    let s = 0;
+    while (s < all.length && all[s] <= after) s++;
+    const seq = [];
+    for (let i = 0; i < Math.min(n, all.length); i++) seq.push(all[(s + i) % all.length]);
+    return 'SS1\nL ' + seq.join(',') + '\nEND';
+  }
   const have = {};
   (haveCsv ? String(haveCsv).split(',') : []).forEach(function (x) { have[Number(x)] = true; });
   const ids = ids_();
