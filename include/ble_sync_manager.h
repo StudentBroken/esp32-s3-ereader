@@ -16,7 +16,8 @@
 #define BLE_CHAR_CTRL_UUID      "19b10001-e8f2-537e-4f6c-d104768a1214"
 #define BLE_CHAR_DATA_UUID      "19b10002-e8f2-537e-4f6c-d104768a1214"
 
-#define BLE_TIMEOUT_SECONDS     60
+#define BLE_TIMEOUT_SECONDS     120   // waiting for a client to connect
+#define BLE_IDLE_SECONDS        600   // connected client may sit idle this long (web page sends keep-alive pings)
 
 enum BleSyncState {
     BLE_SYNC_INACTIVE = 0,
@@ -37,6 +38,7 @@ enum BleCtrlCmd {
     CMD_DELETE_BOOK     = 0x05,
     CMD_RENAME_BOOK     = 0x06,
     CMD_SELECT_BOOK     = 0x07,
+    CMD_PING            = 0x30,  // keep-alive from the web page, refreshes the idle timer, no reply
     CMD_WIFI_SET        = 0x20,  // [slot][ssid_len][ssid][pass...]  (empty ssid clears the slot)
     CMD_SS_CONFIG       = 0x21,  // [enabled][url...]
     CMD_START_OTA       = 0x10,
@@ -100,8 +102,15 @@ private:
         }
     }
 
+    // Tighter link parameters: 15-50 ms interval, no slave latency, 6 s supervision timeout.
+    void onConnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) override {
+        pServer->updateConnParams(desc->conn_handle, 12, 40, 0, 600);
+        onConnect(pServer);
+    }
+
     void onConnect(NimBLEServer* pServer) override {
         client_connected = true;
+        start_time = millis();   // fresh idle window for every (re)connect
         if (current_state == BLE_SYNC_ADVERTISING) {
             current_state = BLE_SYNC_CONNECTED;
         }
@@ -123,6 +132,7 @@ private:
             current_state = BLE_SYNC_FAILED;
         } else if (current_state != BLE_SYNC_SUCCESS) {
             current_state = BLE_SYNC_ADVERTISING;
+            start_time = millis();   // give a reconnecting browser a full window
             NimBLEDevice::startAdvertising();
         }
     }
@@ -239,6 +249,9 @@ private:
                 if (target[0] != '/') target = "/" + target;
                 pending_select_path = target;
                 pending_select_book = true;
+
+            } else if (cmd == CMD_PING) {
+                start_time = millis();   // keep-alive, silent
 
             } else if (cmd == CMD_WIFI_SET && val.length() >= 3) {
                 start_time = millis(); // Refresh timeout
@@ -566,7 +579,7 @@ public:
         ota_reboot_pending = false;
         ota_reboot_time = 0;
 
-        Serial.println("[BLE] Advertising started as 'ESP32-Ereader'. 60s timeout active.");
+        Serial.println("[BLE] Advertising started as 'ESP32-Ereader'. 120 s connect window, 10 min idle limit.");
         return true;
     }
 
@@ -642,8 +655,9 @@ public:
 
         // When not actively receiving data, enforce the 60s timeout
         if (current_state == BLE_SYNC_ADVERTISING || current_state == BLE_SYNC_CONNECTED) {
-            if (millis() - start_time >= (BLE_TIMEOUT_SECONDS * 1000UL)) {
-                Serial.println("[BLE] 60-second connection timeout reached!");
+            uint32_t limit = (client_connected ? BLE_IDLE_SECONDS : BLE_TIMEOUT_SECONDS) * 1000UL;
+            if (millis() - start_time >= limit) {
+                Serial.printf("[BLE] %s timeout reached!\n", client_connected ? "Idle" : "Connection");
                 current_state = BLE_SYNC_TIMEOUT_EXPIRED;
             }
         }
@@ -656,8 +670,9 @@ public:
             return 0;
         }
         uint32_t elapsed = (millis() - start_time) / 1000;
-        if (elapsed >= BLE_TIMEOUT_SECONDS) return 0;
-        return BLE_TIMEOUT_SECONDS - elapsed;
+        uint32_t limit = client_connected ? BLE_IDLE_SECONDS : BLE_TIMEOUT_SECONDS;
+        if (elapsed >= limit) return 0;
+        return limit - elapsed;
     }
 
     BleSyncState get_state() const { return current_state; }
