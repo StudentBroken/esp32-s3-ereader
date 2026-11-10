@@ -65,7 +65,7 @@ private:
     uint32_t start_time = 0;
     uint32_t total_expected_bytes = 0;
     uint32_t bytes_received = 0;
-    char incoming_filename[48] = {0};
+    char incoming_filename[128] = {0};
     char target_file_path[64] = {0};
     File upload_file;
     bool client_connected = false;
@@ -159,11 +159,26 @@ private:
                 memcpy(incoming_filename, val.data() + 5, name_len);
                 incoming_filename[name_len] = '\0';
 
-                // Ensure path starts with /
-                if (incoming_filename[0] != '/') {
-                    snprintf(target_file_path, sizeof(target_file_path), "/%s", incoming_filename);
-                } else {
-                    strncpy(target_file_path, incoming_filename, sizeof(target_file_path) - 1);
+                // Library paths are limited to 31 chars (StoredBookInfo.filename). A longer name used to be
+                // truncated, losing ".ebk" so the book vanished from the library (or two books collided).
+                // Shorten to "<stem>_<hash>.ebk" so the extension and uniqueness are kept.
+                {
+                    const char* base = incoming_filename;
+                    const char* sl = strrchr(base, '/');
+                    if (sl) base = sl + 1;
+                    String name(base);
+                    if (name.length() + 1 > 31) {
+                        uint32_t h = 2166136261u;   // FNV-1a of the full name
+                        for (size_t i = 0; i < name.length(); i++) { h ^= (uint8_t)name[i]; h *= 16777619u; }
+                        String stem = name;
+                        if (stem.endsWith(".ebk")) stem.remove(stem.length() - 4);
+                        char tail[16];
+                        snprintf(tail, sizeof(tail), "_%04x.ebk", (unsigned)(h & 0xFFFF));
+                        size_t keep = 31 - 1 - strlen(tail);   // '/' + stem + tail <= 31
+                        stem = stem.substring(0, keep);
+                        name = stem + tail;
+                    }
+                    snprintf(target_file_path, sizeof(target_file_path), "/%s", name.c_str());
                 }
 
                 Serial.printf("[BLE] Start Transfer -> File: '%s', Size: %u bytes\n", 

@@ -60,9 +60,9 @@
 #define SS_SYNC_BUDGET_MS (3UL * 60UL * 1000UL)
 #define SS_WAKE_INTERVAL_US (12ULL * 3600ULL * 1000000ULL)
 
-// Photo frame mode: wake every 10 min to show the next image, sync every 3 h (18 wakes)
-#define SS_PHOTO_INTERVAL_US (10ULL * 60ULL * 1000000ULL)
-#define SS_PHOTO_SYNC_TICKS  18
+// Photo frame mode: wake every 30 min to show the next image, sync every 3 h (6 wakes)
+#define SS_PHOTO_INTERVAL_US (30ULL * 60ULL * 1000000ULL)
+#define SS_PHOTO_SYNC_TICKS  6
 
 // Red plane polarity on the controller: 0 = red (same convention as the black plane, 0 = black).
 #define SS_RED_ACTIVE_LOW 0
@@ -170,7 +170,7 @@ public:
     /** Sync possible at all: toggle on, URL and at least one network stored. */
     static bool ready() { return enabled() && url().length() > 8 && has_wifi(); }
 
-    // Photo frame mode (continuous slideshow): flag, 10 min wake counter, sync retry state
+    // Photo frame mode (continuous slideshow): flag, 30 min wake counter, sync retry state
     static bool photo_mode() { Preferences p; p.begin("ss", true); bool v = p.getUChar("photo", 0); p.end(); return v; }
     static void set_photo_mode(bool on) {
         Preferences p; p.begin("ss", false);

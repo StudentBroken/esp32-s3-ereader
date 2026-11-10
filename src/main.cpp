@@ -35,7 +35,8 @@ enum ButtonEvent {
     EVENT_NEXT,        // D5 tap: Next / Down
     EVENT_MENU_TAP,    // D9 tap: Menu / Select
     EVENT_MENU_HOLD,   // D9 hold 2s: Power Confirm Dialog
-    EVENT_TOGGLE_BARS  // D4 + D5 chord (simultaneous press & release): Toggle Zen / Hide Bars mode
+    EVENT_TOGGLE_BARS, // D4 + D5 chord (simultaneous press & release): Toggle Zen / Hide Bars mode
+    EVENT_BLE_SYNC     // D4 + D5 held together ~1.5s: jump straight to BLE sync mode
 };
 
 QueueHandle_t inputQueue = NULL;
@@ -205,6 +206,7 @@ void touch_hardware_reinit() {
 // Never blocks on e-ink SPI or BUSY pin refreshes!
 // Picture frame: keep scanning touch pads while the panel refreshes (taps are batched afterwards)
 volatile bool touch_in_busy_ok = false;
+volatile bool touch_debug = false;   // serial 'T': stream raw pad values (for tuning)
 
 void touch_task(void* pvParameters) {
     bool d4_is_held = false;
@@ -228,6 +230,9 @@ void touch_task(void* pvParameters) {
         }
 
         bool is_busy = (digitalRead(EPD_BUSY_PIN) == HIGH);
+        static bool prev_busy = false;
+        if (prev_busy && !is_busy && touch_in_busy_ok) last_busy_end = millis() - 200;   // 150 ms settle after refresh
+        prev_busy = is_busy;
         if (is_busy && !touch_in_busy_ok) {
             last_busy_end = millis();
             d4_press_start = 0;
@@ -283,6 +288,15 @@ void touch_task(void* pvParameters) {
         bool prev_touched = tracker_prev.update(TOUCH_DELTA_NAV, TOUCH_RELEASE_NAV, is_busy);
         bool next_touched = tracker_next.update(TOUCH_DELTA_NAV, TOUCH_RELEASE_NAV, is_busy);
         bool menu_touched = tracker_menu.update(TOUCH_DELTA_MENU, TOUCH_RELEASE_MENU, is_busy);
+        if (touch_debug) {
+            static uint32_t last_dbg = 0;
+            if (millis() - last_dbg >= 100) {
+                last_dbg = millis();
+                Serial.printf("[TD] %lu busy=%d raw D4=%u D5=%u D9=%u | base %.0f %.0f %.0f\n", millis(), (int)is_busy,
+                              (unsigned)tracker_prev.last_raw, (unsigned)tracker_next.last_raw, (unsigned)tracker_menu.last_raw,
+                              tracker_prev.baseline, tracker_next.baseline, tracker_menu.baseline);
+            }
+        }
         if (is_busy && ((int)prev_touched + (int)next_touched + (int)menu_touched) >= 2) {
             prev_touched = next_touched = menu_touched = false;
         }
@@ -324,6 +338,16 @@ void touch_task(void* pvParameters) {
         // 3. Simultaneous chord: Both D4 and D5 held at the same time
         if (d4_is_held && d5_is_held) {
             both_held = true;
+            // Hold both pads ~1.5 s -> BLE sync (fires while still held; releases then do nothing)
+            uint32_t both_since = (d4_press_start > d5_press_start) ? d4_press_start : d5_press_start;
+            if (!chord_fired && millis() - both_since >= 1500) {
+                chord_fired = true;
+                if (inputQueue != NULL) {
+                    xQueueReset(inputQueue);
+                    ButtonEvent evt = EVENT_BLE_SYNC;
+                    xQueueSend(inputQueue, &evt, 0);
+                }
+            }
         }
 
         // 4. D4 Release
@@ -462,7 +486,7 @@ static const MenuItem MENU_PAGE_ITEMS[3][7] = {
     { MENU_ORIENTATION, MENU_BLE_SYNC, MENU_STATUS, MENU_CLEAN_REFRESH, MENU_BACK, MENU_BACK, MENU_BACK },
 };
 static const int MENU_PAGE_COUNT[3] = { 7, 5, 5 };
-static const char* MENU_PAGE_TITLE[3] = { "QUICK OPTIONS", "SCREENSAVER & FRAME", "DEVICE" };
+static const char* MENU_PAGE_TITLE[3] = { "\x01 WHAT NEXT?", "\x0F PHOTOS & SCREENSAVER", "\x0E DEVICE TOOLS" };
 static inline int menu_count() { return MENU_PAGE_COUNT[menu_page]; }
 static inline MenuItem menu_item_at(int i) { return MENU_PAGE_ITEMS[menu_page][i]; }
 
@@ -1005,7 +1029,7 @@ void render_current_reading_page(uint32_t bat_mv, uint8_t bat_pct, bool fast_bw 
     Serial.printf("\n[EPD] Rendering Page %d (%s Refresh, Orient: %s, Format: %s)...\n",
                   current_frame + 1,
                   do_fast ? "FAST B/W ~1.0s" : "FULL CLEAN ANTI-GHOST",
-                  (current_rotation == ORIENT_LANDSCAPE) ? "Landscape" : "Portrait 90*",
+                  (current_rotation == ORIENT_LANDSCAPE) ? "Wide" : "Tall",
                   (ver == EBK_FORMAT_V2_TEXT) ? "v2 Text" : (ver == EBK_FORMAT_V1_BITMAP ? "v1 Bitmap" : "Demo"));
     uint32_t t0 = millis();
 
@@ -1051,6 +1075,7 @@ void render_current_reading_page(uint32_t bat_mv, uint8_t bat_pct, bool fast_bw 
  * Settings & Quick Menu Modal Screen.
  */
 void render_menu_screen(uint8_t bat_pct) {
+    touch_in_busy_ok = true;   // taps during the refresh are queued and batched afterwards
     display.setRotation(current_rotation);
     int w = display.width();
     int h = display.height();
@@ -1071,7 +1096,7 @@ void render_menu_screen(uint8_t bat_pct) {
         display.setFont(NULL);
         display.setTextColor(GxEPD_WHITE);
         display.setCursor(14, 13);
-        display.print("SETTINGS & POWER MENU");
+        display.print("\x03 HELLO! PICK SOMETHING");
         draw_battery_indicator(w - 36, 11, bat_pct, true);
 
         // Modal Card with Drop Shadow
@@ -1090,32 +1115,32 @@ void render_menu_screen(uint8_t bat_pct) {
         // Menu items
         const char* menu_labels[MENU_COUNT];
         char orient_buf[36];
-        snprintf(orient_buf, sizeof(orient_buf), "Orientation: %s",
-                 (current_rotation == ORIENT_LANDSCAPE) ? "Landscape" : "Portrait 90*");
+        snprintf(orient_buf, sizeof(orient_buf), "Screen shape: %s",
+                 (current_rotation == ORIENT_LANDSCAPE) ? "Wide" : "Tall");
 
-        menu_labels[MENU_RESUME]        = "Resume Reading";
-        menu_labels[MENU_LIBRARY]       = "Library / Manage Books";
-        menu_labels[MENU_BLE_SYNC]      = "Wireless BLE Upload";
+        menu_labels[MENU_RESUME]        = "Back to my book";
+        menu_labels[MENU_LIBRARY]       = "My bookshelf";
+        menu_labels[MENU_BLE_SYNC]      = "Send books over Bluetooth";
         menu_labels[MENU_ORIENTATION]   = orient_buf;
         menu_labels[MENU_JUMP]          = (StorageManager::get_book_version(current_book_path) == EBK_FORMAT_V2_TEXT)
-                                            ? "Jump to Chapter" : "Jump Page Scrubber";
+                                            ? "Hop to a chapter" : "Hop to a page";
         char ss_buf[36];
-        snprintf(ss_buf, sizeof(ss_buf), "Colour Screensaver: %s", ScreensaverConfig::enabled() ? "ON" : "OFF");
+        snprintf(ss_buf, sizeof(ss_buf), "Colourful sleep art: %s", ScreensaverConfig::enabled() ? "ON" : "OFF");
         char photo_buf[36];
-        snprintf(photo_buf, sizeof(photo_buf), "Photo Screensaver Mode: %s", ScreensaverConfig::photo_mode() ? "ON" : "OFF");
+        snprintf(photo_buf, sizeof(photo_buf), "Photo frame sleep: %s", ScreensaverConfig::photo_mode() ? "ON" : "OFF");
         char fo_buf[36];
-        snprintf(fo_buf, sizeof(fo_buf), "Frame order: %s", ScreensaverConfig::frame_seq() ? "In order" : "Shuffle");
-        menu_labels[MENU_PICTURE_FRAME] = "Picture Frame";
-        menu_labels[MENU_SUB_SS]        = "Screensaver & Frame  >>";
-        menu_labels[MENU_SUB_DEVICE]    = "Device  >>";
-        menu_labels[MENU_BACK]          = "<< Back";
+        snprintf(fo_buf, sizeof(fo_buf), "Photo order: %s", ScreensaverConfig::frame_seq() ? "In order" : "Surprise me");
+        menu_labels[MENU_PICTURE_FRAME] = "Show my photos";
+        menu_labels[MENU_SUB_SS]        = "Photos & sleep art  >>";
+        menu_labels[MENU_SUB_DEVICE]    = "Device tools  >>";
+        menu_labels[MENU_BACK]          = "<< Go back";
         menu_labels[MENU_FRAME_ORDER]   = fo_buf;
         menu_labels[MENU_PHOTO_MODE] = photo_buf;
         menu_labels[MENU_SCREENSAVER_TOGGLE] = ss_buf;
-        menu_labels[MENU_SCREENSAVER_NOW]    = "Show Screensaver Now";
-        menu_labels[MENU_STATUS]        = "Status / Diagnostics";
-        menu_labels[MENU_CLEAN_REFRESH] = "Full Anti-Ghost Refresh";
-        menu_labels[MENU_SLEEP]         = "Sleep / Power Off";
+        menu_labels[MENU_SCREENSAVER_NOW]    = "Show sleep art now";
+        menu_labels[MENU_STATUS]        = "How am I doing?";
+        menu_labels[MENU_CLEAN_REFRESH] = "Freshen the screen";
+        menu_labels[MENU_SLEEP]         = "Nap time (sleep)";
 
         int start_y = card_y + 32;
         int row_h = (card_h - 58) / menu_count();
@@ -1139,7 +1164,7 @@ void render_menu_screen(uint8_t bat_pct) {
         display.fillRect(card_x + 4, card_y + card_h - 22, card_w - 8, 18, GxEPD_WHITE);
         display.setTextColor(GxEPD_BLACK);
         display.setCursor(card_x + 16, card_y + card_h - 14);
-        display.print("Up          Down          Select");
+        display.print("< Up       Down >       OK! \x03");
 
         // Screen bottom footer
         display.fillRect(4, h - 26, w - 8, 22, GxEPD_BLACK);
@@ -1150,10 +1175,10 @@ void render_menu_screen(uint8_t bat_pct) {
             int rd_pct = 0;
             if (StorageManager::get_book_version(current_book_path) == EBK_FORMAT_V2_TEXT) {
                 rd_pct = StorageManager::v2_book_percent(current_book_path, current_chapter_idx, current_text_file_offset);
-                snprintf(rd, sizeof(rd), "Read %d%% | Ch.%d/%d | Auto-close 15s", rd_pct, current_chapter_idx + 1, total_frames);
+                snprintf(rd, sizeof(rd), "Nice! %d%% read | Ch.%d/%d | closes in 15s", rd_pct, current_chapter_idx + 1, total_frames);
             } else {
                 rd_pct = (total_frames > 0) ? ((current_frame + 1) * 100) / total_frames : 0;
-                snprintf(rd, sizeof(rd), "Read %d%% | Page %d/%d | Auto-close 15s", rd_pct, current_frame + 1, total_frames);
+                snprintf(rd, sizeof(rd), "Nice! %d%% read | Page %d/%d | closes in 15s", rd_pct, current_frame + 1, total_frames);
             }
             display.print(rd);
         }
@@ -1186,7 +1211,7 @@ void render_power_confirm_screen(uint8_t bat_pct) {
         display.setFont(NULL);
         display.setTextColor(GxEPD_WHITE);
         display.setCursor(14, 13);
-        display.print("POWER & SLEEP");
+        display.print("\x0E SLEEPY TIME");
         draw_battery_indicator(w - 36, 11, bat_pct, true);
 
         // Modal Card with Drop Shadow
@@ -1200,19 +1225,19 @@ void render_power_confirm_screen(uint8_t bat_pct) {
         display.setFont(NULL);
         display.setTextColor(GxEPD_WHITE);
         display.setCursor(card_x + 12, card_y + 12);
-        display.print("POWER OFF / DEEP SLEEP?");
+        display.print("TIME FOR A NAP?");
 
         // Confirmation Message
         display.setFont(&FreeSans9pt7b);
         display.setTextColor(GxEPD_BLACK);
         display.setCursor(card_x + 16, card_y + 58);
-        display.print("Put device to sleep?");
+        display.print("Ready for a nap?");
 
         display.setFont(NULL);
         display.setCursor(card_x + 16, card_y + 78);
-        display.print("Enters Stage 2 ('Zzz' screensaver).");
+        display.print("I'll show a cozy Zzz screen.");
         display.setCursor(card_x + 16, card_y + 92);
-        display.print("Touch Menu pad to wake.");
+        display.print("Tap the Menu pad to wake me!");
 
         // Two Action Buttons: Back Button and Confirm Sleep
         int btn_w = (card_w - 36) / 2;
@@ -1225,7 +1250,7 @@ void render_power_confirm_screen(uint8_t bat_pct) {
         display.setCursor(card_x + 18, btn_y + 12);
         display.print("< BACK");
         display.setCursor(card_x + 18, btn_y + 25);
-        display.print("Cancel");
+        display.print("Stay awake");
 
         // CONFIRM SLEEP Button (Inverted solid black)
         display.fillRect(card_x + 24 + btn_w, btn_y, btn_w, 40, GxEPD_BLACK);
@@ -1233,7 +1258,7 @@ void render_power_confirm_screen(uint8_t bat_pct) {
         display.setCursor(card_x + 30 + btn_w, btn_y + 12);
         display.print("SLEEP >");
         display.setCursor(card_x + 30 + btn_w, btn_y + 25);
-        display.print("Confirm");
+        display.print("Sweet dreams");
 
         // Screen bottom footer
         display.fillRect(4, h - 26, w - 8, 22, GxEPD_BLACK);
@@ -1383,7 +1408,7 @@ void render_library_screen(int selected_idx, uint8_t bat_pct) {
         display.fillRect(card_x + 4, card_y + card_h - 22, card_w - 8, 18, GxEPD_WHITE);
         display.setTextColor(GxEPD_BLACK);
         display.setCursor(card_x + 16, card_y + card_h - 14);
-        display.print("Up          Down          Select");
+        display.print("< Up       Down >       OK! \x03");
 
         // Screen bottom footer
         display.fillRect(4, h - 26, w - 8, 22, GxEPD_BLACK);
@@ -1864,7 +1889,7 @@ static void prepare_epd() {
             Serial.printf("[PHOTO] Battery %u%% <= 25%% -> photo frame stopped, sleeping until touched.\n", pct);
         } else {
             esp_sleep_enable_timer_wakeup(SS_PHOTO_INTERVAL_US);
-            Serial.println("[PHOTO] 10 min photo timer armed.");
+            Serial.println("[PHOTO] 30 min photo timer armed.");
         }
     } else if (ScreensaverConfig::ready()) {
         esp_sleep_enable_timer_wakeup(SS_WAKE_INTERVAL_US);
@@ -1917,7 +1942,7 @@ void render_low_battery_screen(uint32_t bat_mv, uint8_t bat_pct) {
 }
 
 /**
- * Photo frame wake (every 10 min). Never returns: shows the next cached image and sleeps again.
+ * Photo frame wake (every 30 min). Never returns: shows the next cached image and sleeps again.
  * Every SS_PHOTO_SYNC_TICKS wakes (3 h) fetches new random images first; failed syncs retry on the
  * next wake, 4 attempts max. Stops (no timer) at or below 25% battery.
  */
@@ -2103,7 +2128,7 @@ static int build_status_lines(char lines[][64], int max) {
     if (ScreensaverConfig::photo_mode()) {
         uint32_t t = ScreensaverConfig::photo_tick();
         uint32_t left = SS_PHOTO_SYNC_TICKS - (t % SS_PHOTO_SYNC_TICKS);
-        snprintf(lines[n++], 64, "Next     image 10 min | sync in %u wakes", (unsigned)left);
+        snprintf(lines[n++], 64, "Next     image 30 min | sync in %u wakes", (unsigned)left);
     } else if (ScreensaverConfig::ready()) {
         snprintf(lines[n++], 64, "Next     12 h clock wake after sleep");
     } else {
@@ -2279,7 +2304,7 @@ void run_manual_screensaver() {
 // Picture frame (awake slideshow): shuffled playlist, D4/D5 = prev/next image, auto-advance,
 // leaves the mode when the battery stays at or below 25% (USB power reads as full, so it keeps running).
 // -----------------------------------------------------------------------------
-#define FRAME_AUTO_MS        (10UL * 60UL * 1000UL)
+#define FRAME_AUTO_MS        (30UL * 60UL * 1000UL)
 #define FRAME_BAT_CHECK_MS   30000UL
 static std::vector<uint32_t> frame_order;
 static int frame_pos = -1;
@@ -2460,7 +2485,7 @@ void setup() {
     Serial.println("\n=============================================");
     Serial.printf("  ESP32-S3 E-Reader 2-Stage System (Boot #%d) \n", boot_count);
     Serial.printf("  Current Orientation: %s (setRotation=%d)\n",
-                  (current_rotation == ORIENT_LANDSCAPE) ? "Landscape" : "Portrait 90*", current_rotation);
+                  (current_rotation == ORIENT_LANDSCAPE) ? "Wide" : "Tall", current_rotation);
     Serial.println("=============================================");
 
     StorageManager::begin();
@@ -2594,7 +2619,7 @@ void setup() {
         render_current_reading_page(bat_mv, bat_pct, /*fast_bw=*/false);
         Serial.printf("[APP] Restored reading '%s' at Page %d/%d (Rot: %s)!\n",
                       current_book_path, current_frame + 1, total_frames,
-                      (current_rotation == ORIENT_LANDSCAPE) ? "Landscape" : "Portrait 90*");
+                      (current_rotation == ORIENT_LANDSCAPE) ? "Wide" : "Tall");
     }
 
     // Calibrate touch baselines AFTER display is initialized and settled in active reading mode
@@ -2849,6 +2874,10 @@ void loop() {
             Serial.println("\n[CMD] >>> Serial screensaver now <<<");
             run_manual_screensaver();
         }
+        else if (c == 'T') {
+            touch_debug = !touch_debug;
+            Serial.printf("[CMD] touch debug %s\n", touch_debug ? "ON" : "OFF");
+        }
         else if (c == 'f') {
             Serial.println("\n[CMD] >>> Serial picture frame <<<");
             frame_start();
@@ -2899,13 +2928,21 @@ void loop() {
     // =========================================================================
     // EVENT PROCESSING FROM ASYNC QUEUE
     // =========================================================================
+    touch_in_busy_ok = (current_ui_state == UI_STATE_FRAME || current_ui_state == UI_STATE_MENU);
     ButtonEvent evt;
     if (inputQueue != NULL && xQueueReceive(inputQueue, &evt, 0) == pdTRUE) {
         awake_start = millis();
         menu_active_timer = millis();
 
+        if (evt == EVENT_BLE_SYNC) {
+            Serial.println("\n[TOUCH] >>> D4+D5 HELD -> BLE Sync mode <<<");
+            menu_dirty = false;
+            jump_dirty = false;
+            if (current_ui_state == UI_STATE_FRAME) touch_in_busy_ok = false;
+            if (current_ui_state != UI_STATE_BLE_SYNC) start_ble_sync_mode();
+        }
         // Global Hold 2s on D9 -> Always opens Power dialog
-        if (evt == EVENT_MENU_HOLD) {
+        else if (evt == EVENT_MENU_HOLD) {
             Serial.println("\n[TOUCH] >>> D9 HELD 2s -> Opening Power / Sleep Dialog! <<<");
             menu_dirty = false;
             jump_dirty = false;
@@ -3055,29 +3092,18 @@ void loop() {
                     ButtonEvent up_evt   = (current_rotation == ORIENT_PORTRAIT) ? EVENT_NEXT : EVENT_PREV;
                     ButtonEvent down_evt = (current_rotation == ORIENT_PORTRAIT) ? EVENT_PREV : EVENT_NEXT;
 
-                    if (evt == up_evt) {
-                        int step = 1;
+                    if (evt == up_evt || evt == down_evt) {
+                        // Batch: swallow every queued Up/Down tap (mixed too) into one net move
+                        int net = (evt == down_evt) ? 1 : -1;
                         ButtonEvent peek_evt;
-                        while (xQueuePeek(inputQueue, &peek_evt, 0) == pdTRUE && peek_evt == up_evt) {
+                        while (xQueuePeek(inputQueue, &peek_evt, 0) == pdTRUE &&
+                               (peek_evt == up_evt || peek_evt == down_evt)) {
                             xQueueReceive(inputQueue, &peek_evt, 0);
-                            step++;
+                            net += (peek_evt == down_evt) ? 1 : -1;
                         }
-                        selected_menu_idx = (selected_menu_idx - step) % menu_count();
+                        selected_menu_idx = (selected_menu_idx + net) % menu_count();
                         if (selected_menu_idx < 0) selected_menu_idx += menu_count();
-                        Serial.printf("\n[MENU] Up (via %s, step %d) -> Selected Item #%d\n",
-                                      (up_evt == EVENT_PREV ? "D4" : "D5"), step, selected_menu_idx);
-                        menu_dirty = true;
-                        menu_dirty_time = millis();
-                    } else if (evt == down_evt) {
-                        int step = 1;
-                        ButtonEvent peek_evt;
-                        while (xQueuePeek(inputQueue, &peek_evt, 0) == pdTRUE && peek_evt == down_evt) {
-                            xQueueReceive(inputQueue, &peek_evt, 0);
-                            step++;
-                        }
-                        selected_menu_idx = (selected_menu_idx + step) % menu_count();
-                        Serial.printf("\n[MENU] Down (via %s, step %d) -> Selected Item #%d\n",
-                                      (down_evt == EVENT_PREV ? "D4" : "D5"), step, selected_menu_idx);
+                        Serial.printf("\n[MENU] net move %d -> Selected Item #%d\n", net, selected_menu_idx);
                         menu_dirty = true;
                         menu_dirty_time = millis();
                     } else if (evt == EVENT_MENU_TAP) {
@@ -3111,7 +3137,7 @@ void loop() {
                                 current_rotation = (current_rotation == ORIENT_LANDSCAPE) ? ORIENT_PORTRAIT : ORIENT_LANDSCAPE;
                                 ConfigManager::set_rotation(current_rotation, true);
                                 Serial.printf("[SETTINGS] Toggled Orientation to: %s (setRotation=%d) [Saved to NVS]\n",
-                                              (current_rotation == ORIENT_LANDSCAPE) ? "Landscape" : "Portrait 90*", current_rotation);
+                                              (current_rotation == ORIENT_LANDSCAPE) ? "Wide" : "Tall", current_rotation);
                                 render_menu_screen(pct);
                                 break;
                             case MENU_JUMP:
@@ -3140,7 +3166,7 @@ void loop() {
                                 } else {
                                     ScreensaverConfig::set_photo_mode(true);
                                     Serial.println("[SETTINGS] Photo frame mode ON -> starting slideshow");
-                                    run_manual_screensaver();   // shows first image, sleeps with the 10 min timer
+                                    run_manual_screensaver();   // shows first image, sleeps with the 30 min timer
                                     // returns only if it could not start (low battery / no images)
                                     ScreensaverConfig::set_photo_mode(false);
                                     render_menu_screen(pct);
@@ -3395,7 +3421,7 @@ void loop() {
     // =========================================================================
     // If in Settings Menu and dirty, render once the rapid clicks pause for 70ms
     if (current_ui_state == UI_STATE_MENU && menu_dirty) {
-        if (millis() - menu_dirty_time >= 70) {
+        if (millis() - menu_dirty_time >= 250) {
             menu_dirty = false;
             uint32_t mv = read_battery_millivolts();
             render_menu_screen(calculate_battery_percentage(mv));
